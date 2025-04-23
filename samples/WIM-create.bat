@@ -1,7 +1,7 @@
 @ECHO OFF
-skript="\\vaultsrv\CIDEON\_DPL\WIM-handler.ps1"
+skript="\\SERVER\SHARE\DEPLOYMENT\WIM-handler.ps1"
 wim="20XX_PDC_VLT"
-wimpath="\\vaultsrv\CIDEON\_DPL"
+wimpath="\\SERVER\SHARE\DEPLOYMENT"
 
 powershell.exe -ExecutionPolicy Bypass %skript% -WIM %wim% -Mode "Create" -Path %wimpath%
 

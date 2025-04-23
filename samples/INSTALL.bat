@@ -1,7 +1,7 @@
 @ECHO OFF
-skript="\\vaultsrv\CIDEON\_DPL\WIM-AppDeploy.ps1"
+skript="\\SERVER\SHARE\ScriptLocation\WIM-AppDeploy.ps1"
 wim="20XX_PDC_VLT"
-wimpath="\\vaultsrv\CIDEON\_DPL"
+wimpath="\\SERVER\SHARE\DEPLOYMENT"
 
 powershell.exe -ExecutionPolicy Bypass %skript% -WIM %wim% -Mode "Install" -Path %wimpath% -Logging -Purge
 

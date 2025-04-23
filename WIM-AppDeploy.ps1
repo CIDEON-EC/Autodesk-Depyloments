@@ -274,6 +274,100 @@ function Uninstall-AutodeskDeployment {
     Start-Process -NoNewWindow -FilePath $Path\Uninstall.cmd -Wait
     Write-Log -text "Uninstalled Autodesk Products" -Info
 }
+
+function Set-AutodeskDeployment {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $false, HelpMessage = 'Path to the Autodesk Deployment')]
+        [string]$Path = $mountPath,
+        [Parameter(Mandatory = $false, HelpMessage = 'XML file to change. Default is "setup_ext.xml"')]
+        [string]$xmlFileName = "setup_ext.xml",
+        [Parameter(Mandatory = $false, HelpMessage = 'One or More Language Packs to keep. Name must be in English (e.g. German, Polish). It has to be available in the deployment. Default is "German"')]
+        [string[]]$Language = @(),
+        [Parameter(Mandatory = $false, HelpMessage = 'Remove a specified update')]
+        [string[]]$Remove
+    )
+    
+    begin {
+        # Get the Autodesk Products from the path
+        $adskProducts = (Get-ChildItem -Path $Path) | Where-Object { $_.Name -like "*$($Version)*" }
+        if ($adskProducts.Count -eq 0) {
+            Write-Log -text "No Autodesk Products found in $Path" -Fail
+            return
+        }
+        else {
+            Write-Log -text "Autodesk Products found: $($adskProducts.Name -join ", ")" -Info
+        }
+    }
+    
+    process {
+        foreach ($adskProduct in $adskProducts) {
+            
+            # get xml file
+            $xmlPath = [System.IO.Path]::Combine($adskProduct.FullName, $xmlFileName)
+            [xml]$xml = Get-Content $xmlPath
+
+            Write-Log -text "Change $xmlPath file" -Info
+
+            # set namespace
+            $ns = New-Object System.Xml.XmlNamespaceManager $xml.NameTable
+            $ns.AddNamespace("ns", $xml.BundleExtension.xmlns)
+
+            # Language Packs
+            if ($Language.Length -gt 0) {
+                try {
+    
+                    # get all language pack nodes
+                    $packages = $xml.SelectNodes("//ns:Package[contains(@name,'Language Pack')]", $ns)
+                    
+                    # delete all language packs that are not in the Language array
+                    # go through all packages
+                    foreach ($package in $packages) {
+                        $delete = $true
+                        # go through all languages in the Language array
+                        foreach ($lang in $Language) {
+                            # check if the package name contains the language
+                            if ($package.name -like "*$lang*") { 
+                                $delete = $false 
+                            }
+                        }
+                        if ($delete) {
+                            Write-Log -text "Package $($package.name) will be removed" -Info
+                            # remove the package from the xml file
+                            $package.ParentNode.RemoveChild($package) | Out-Null
+                        }
+                    }
+
+                }
+                catch {
+                    Write-Log -text "The language $Language could not be removed"
+                }
+            }
+            # Remove
+            if ($Remove.Length -gt 0) {
+                try {
+                    #
+                    foreach ($name in $Remove) {
+                        $packages = $xml.SelectNodes("//ns:Package[contains(@name,$name)]", $ns)
+                        foreach ($package in $packages) {
+                            Write-Log -text "Package $($package.name) will be removed" -Info
+                            # remove the package from the xml file
+                            $package.ParentNode.RemoveChild($package) | Out-Null
+                        }
+                    }  
+                }
+                catch {
+                    Write-Log -text "The Package $Remove could not be removed"
+                }              
+            }
+
+        }
+    }
+    
+    end {
+        
+    }
+}
 function Install-CideonTools {
     
     <#
@@ -392,26 +486,27 @@ function Copy-Local {
         [string[]]$TargetFolder = @("C:\", "C:\")
     )
     try {
-        Write-Log -text "CIDEON Tools will be copied" -Info
-        $localpath = [System.IO.Path]::Combine($Path, "Local")
+        Write-Log -text "Local Folders will be copied" -Info
 
         #check if the array sizes from source and target are the same
         if ($SourceFolder.Count -ne $TargetFolder.Count) {
-            Write-Log -text "Source and Target inputs have not the same folder counts" -Fail
+            Write-Log -text "Source and Target quantites must be the same" -Fail
             return
         }
         # copy
-        foreach($Source in $SourceFolder) {
-            Copy-Item -Path $Source -Destination [System.IO.Path]::Combine($($TargetFolder[$($Sources.IndexOf($Source))])) -Force -Recurse
+        foreach ($Source in $SourceFolder) {
+            $localpath = [System.IO.Path]::Combine($Path, "Local", $Source)
+            Write-Log -text "Local folder $Source" -Info
+            Copy-Item -Path $localpath -Destination [System.IO.Path]::Combine($($TargetFolder[$($Sources.IndexOf($Source))])) -Force -Recurse
         }
 
         
-        Write-Log -text "CIDEON Tools copied is done" -Info
+        Write-Log -text "Local Folders is done" -Info
         
     }
 
     catch {
-        Write-Log -text "CIDEON Tools Error for Path: $($Source)" -Fail
+        Write-Log -text "Local Folders error for path: $($Source)" -Fail
     }
 
     
@@ -999,6 +1094,15 @@ foreach ($wimFile in $wimFiles) {
 
                 #Uninstall 2022 products
                 #Uninstall-Programs -Publisher "Autodesk" -DisplayName "Autodesk Single Sign On Component"
+
+                Set-AutodeskDeployment -Language (Get-WinUserLanguageList)[0].EnglishName
+
+                # set language mode from display language
+
+
+               
+
+
 
                 
                 # install autodesk software
