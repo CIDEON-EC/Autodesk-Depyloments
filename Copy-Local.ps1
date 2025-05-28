@@ -3,7 +3,10 @@
     [string]$Path,
 
     [Parameter(Mandatory = $true, HelpMessage = 'folders to copy')]
-    [string[]]$folder = @("ProgramData", "Users")
+    [string[]]$Folder = @("ProgramData", "Users"),
+
+    [Parameter(Mandatory = $false, HelpMessage = 'target folders for the copy operation. Default is C:\ for all folders')]
+    [string[]]$TargetFolder = @(foreach ($source in $Folder) { "C:\" })
 )
 
 function Write-InstallLog {
@@ -47,7 +50,7 @@ function Write-InstallLog {
         if ($Fail.IsPresent) {
             $category = "ERROR"
         }
-        "$(get-date -format "yyyy-MM-dd HH:mm:ss.ms") [$($category)] $($text)" | out-file "$script:LogFile" -Append
+        "$(Get-Date -Format "yyyy-MM-dd HH:mm:ss.ms") [$($category)] $($text)" | Out-File "$script:LogFile" -Append
     }
     
 }
@@ -59,15 +62,11 @@ function Copy-Local {
     .DESCRIPTION
         Copies local files from the specified path to the local machine. The files are expected to be in the subfolder "Local".
         Subfolders "ProgramData" and "Users" will be copied to the root of C:\.
-        The folder "Users\USERNAME" will be renamed to the actual username. There is a special handling for the USERNAME folder.
-        If the script is running with admin rights, the script checks the "explorer.exe" process to find out what the normal user name is.
-        !IMPORTANT! The normal User must be logged in and the script must be started with admin rights (optionally runs as another user).
     
     .PARAMETER Path
-        The path to a folder, that is containing the subfolder "Local". Default is the mountPath of the script.
+        The path to a folder, that is containing the subfolder "Local".
     
     .EXAMPLE
-        Copy-Local
         Copy-Local -Path "C:\Temp\PDC_20XX"
     
     .NOTES
@@ -79,75 +78,53 @@ function Copy-Local {
     
     param (
         [Parameter()]
-        [string]$Path = $Script:mountPath,
+        [string]$Path,
         [Parameter()]
         [string[]]$SourceFolder = @("ProgramData", "Users"),
         [Parameter()]
         [string[]]$TargetFolder = @("C:\", "C:\")
     )
     try {
-        Write-InstallLog -text "Local Folders will be copied" -Info
+        #Write-Log -text "CIDEON Tools will be copied" -Info
+        $localpath = [System.IO.Path]::Combine($Path, "Local")
 
         #check if the array sizes from source and target are the same
         if ($SourceFolder.Count -ne $TargetFolder.Count) {
-            Write-InstallLog -text "Source and Target quantites must be the same" -Fail
+            #Write-Log -text "Source and Target inputs have not the same folder counts" -Fail
             return
         }
         # copy
         foreach ($Source in $SourceFolder) {
-            $localpath = [System.IO.Path]::Combine($Path, "Local", $Source)
-            Write-InstallLog -text "Local folder $Source" -Info
 
-            # exception for Users folder, because we have to copy it to the user profile folder
             if ($Source -eq "Users") {
                 # get subfolders in Users folder
-                $UsersFolder = Get-ChildItem -Path $localpath -Directory
+                $UsersFolder = Get-ChildItem -Path ([System.IO.Path]::Combine($localpath, $Source)) -Directory
 
                 # for every subfolder in Users
                 foreach ($userFolder in $UsersFolder) {
-
                     # check folder USERNAME, this is the folder for the current user
-                    if ($userFolder.Name -eq "USERNAME") {
+                    if ($userFolder.Name -eq "USERNAME") {$subfolder = $env:Username}
+                    # if not USERNAME, use the folder name, e.g. "Public"
+                    else {$subfolder = $userFolder.Name}
 
-                        # Find the "normal" (non-elevated) user name
-                        try {
-                            # Get the explorer process to find the normal user name
-                            $explorerProc = Get-Process -Name explorer -ErrorAction Stop | Select-Object -First 1
-                            # Get the owner of the explorer process
-                            $normalUserName = (Get-WmiObject Win32_Process -Filter "ProcessId = $($explorerProc.Id)").GetOwner().User
-
-                            Write-InstallLog -text "Username $normalUserName seems the normal User" -Info
-                        }
-                        catch {
-                            Write-InstallLog -text "Could not determine normal user name." -Fail
-                            continue
-                        }
-                        # copy the folder to the user profile folder
-                        Copy-Item -Path $userFolder.FullName -Destination [System.IO.Path]::Combine($($TargetFolder[$($SourceFolder.IndexOf($Source))]), "Users", $normalUserName) -Force -Recurse
-                    }
-                    # copy the other folders to the target folder (e.g. "Public")
-                    else {
-                        Copy-Item -Path $userFolder.FullName -Destination [System.IO.Path]::Combine($($TargetFolder[$($SourceFolder.IndexOf($Source))]), "Users", $userFolder.Name) -Force -Recurse
-                    }
+                    # copy the content of the user folder to the target folder
+                    Copy-Item -Path ([System.IO.Path]::Combine($userFolder.FullName, "*")) -Destination ([System.IO.Path]::Combine($($TargetFolder[$($SourceFolder.IndexOf($Source))]), "Users", $subfolder)) -Force -Recurse
                 }
-
-
-
             }
             # normal case for ProgramData and other folders
             else {
-                Copy-Item -Path $localpath -Destination [System.IO.Path]::Combine($($TargetFolder[$($SourceFolder.IndexOf($Source))])) -Force -Recurse
+                $localpath = [System.IO.Path]::Combine($Path, "Local", $Source)
+                Copy-Item -Path $localpath -Destination ([System.IO.Path]::Combine($($TargetFolder[$($SourceFolder.IndexOf($Source))]))) -Force -Recurse
             }
         }
 
-        
-        Write-InstallLog -text "Local Folders is done" -Info
-        
     }
+  
 
     catch {
-        Write-InstallLog -text "Local Folders error for path $($Source): $($_.Exception.Message)" -Fail
+        #Write-Log -text "CIDEON Tools Error for Path: $($Source)" -Fail
     }
+
 
     
 }
@@ -226,16 +203,8 @@ function Set-AutodeskUpdate {
         Write-InstallLog -text "Set $($ODIS.PSPath)\DisableManualUpdateInstall to $Value" -Info
     }
 }
-# need for default Copy-Local path
-$mountPath = $Path
 
 ## Main Script
 
-$targetFolder = @()
-# fill targetfolder with "C:" for each source folder
-foreach ($source in $folder) {
-    $targetFolder += "C:\"
-}
-
 #Set-AutodeskUpdate -ShowOnly
-Copy-Local -Path $Path -SourceFolder $folder -TargetFolder $TargetFolder
+Copy-Local -Path $Path -SourceFolder $Folder -TargetFolder $TargetFolder
