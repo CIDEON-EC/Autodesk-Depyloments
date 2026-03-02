@@ -31,8 +31,12 @@
       "command": "pwsh",
       "args": [
         "-NoProfile",
-        "-Command",
-        "$current = (git describe --tags --abbrev=0 2>$null).TrimStart(\"v\"); if (-not $current) { $current = \"0.0.0\" }; $parts = $current -split '\\.'; $patch = [int]$parts[2] + 1; $newVersion = \"$($parts[0]).$($parts[1]).$patch\"; $tagName = \"v$newVersion\"; Write-Host \"Creating tag: $tagName\"; git tag -a \"$tagName\" -m \"Release version $newVersion\"; Write-Host \"Tag created successfully: $tagName\""
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}/.vscode/Release-Management.ps1",
+        "-Action",
+        "Patch"
       ],
       "group": {
         "kind": "build",
@@ -55,8 +59,12 @@
       "command": "pwsh",
       "args": [
         "-NoProfile",
-        "-Command",
-        "$current = (git describe --tags --abbrev=0 2>$null).TrimStart(\"v\"); if (-not $current) { $current = \"0.0.0\" }; $parts = $current -split '\\.'; $minor = [int]$parts[1] + 1; $newVersion = \"$($parts[0]).$minor.0\"; $tagName = \"v$newVersion\"; Write-Host \"Creating tag: $tagName\"; git tag -a \"$tagName\" -m \"Release version $newVersion\"; Write-Host \"Tag created successfully: $tagName\""
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}/.vscode/Release-Management.ps1",
+        "-Action",
+        "Minor"
       ],
       "group": {
         "kind": "build",
@@ -79,8 +87,12 @@
       "command": "pwsh",
       "args": [
         "-NoProfile",
-        "-Command",
-        "$current = (git describe --tags --abbrev=0 2>$null).TrimStart(\"v\"); if (-not $current) { $current = \"0.0.0\" }; $parts = $current -split '\\.'; $major = [int]$parts[0] + 1; $newVersion = \"$major.0.0\"; $tagName = \"v$newVersion\"; Write-Host \"Creating tag: $tagName\"; git tag -a \"$tagName\" -m \"Release version $newVersion\"; Write-Host \"Tag created successfully: $tagName\""
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}/.vscode/Release-Management.ps1",
+        "-Action",
+        "Major"
       ],
       "group": {
         "kind": "build",
@@ -103,8 +115,12 @@
       "command": "pwsh",
       "args": [
         "-NoProfile",
-        "-Command",
-        "$tag = git describe --tags --abbrev=0 2>$null; if ($tag) { Write-Host \"Latest tag: $tag\" } else { Write-Host \"No tags found\" }"
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}/.vscode/Release-Management.ps1",
+        "-Action",
+        "ShowLatest"
       ],
       "group": {
         "kind": "test",
@@ -127,8 +143,12 @@
       "command": "pwsh",
       "args": [
         "-NoProfile",
-        "-Command",
-        "Write-Host \"Pushing tags to remote...\"; git push origin --tags; Write-Host \"Tags pushed successfully!\""
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}/.vscode/Release-Management.ps1",
+        "-Action",
+        "Push"
       ],
       "group": {
         "kind": "build",
