@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.4] - 2026-03-02
+### Added
+- Full WhatIf/Dry-Run mode support for all functions
+- SupportsShouldProcess attribute to all relevant functions
+- WhatIf/-Confirm parameter documentation
+
+### Changed
+- Improved Write-InstallLog to display only log message in WhatIf mode (without timestamp)
+- All path checks in Get-WIM, Mount-WIM, Set-AutodeskDeployment, Install-Update, Install-CideonTool, Copy-Local, Disable-VaultExtension, and Uninstall-AutodeskDeployment now skip in WhatIf mode to avoid errors on non-existent paths
+- Dismount-WIM optimized to work in WhatIf mode without requiring elevated privileges
+- ShouldProcess calls now show more meaningful output in WhatIf mode
+- Simplified INSTALL.bat sample script with dynamic path resolution - now automatically finds Install-ADSK.ps1 from parent directory
+
+### Fixed
+- Fixed WhatIf mode errors caused by attempting to access non-existent mount paths
+- Fixed elevated privileges requirement errors in Dismount-WIM during WhatIf mode
+- Resolved file system errors when running with -WhatIf parameter
+
 ## [1.0.1] - 2025-09-09
 ### Changed
 - Removed old powershell scripts

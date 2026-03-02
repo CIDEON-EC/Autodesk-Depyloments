@@ -70,6 +70,10 @@
     Disable Copying of the WIM file to the local folder. The WIM file will be mounted from the server.
 .PARAMETER Purge
     Deletes the WIM file after finishing the script. NOT COMBINED with NoDownload!
+.PARAMETER WhatIf
+    Shows what would happen if the script runs. No actual changes are made (Dry Run mode).
+.PARAMETER Confirm
+    Prompts for confirmation before executing each action.
 .EXAMPLE
 cd \\SERVER\SHARE\ScriptLocation
 .\WIM-AppDeploy.ps1 -WIM "PDC_20XX" -Mode "Install" -Path "\\SERVER\SHARE\DEPLOYMENT" -Logging
@@ -80,7 +84,7 @@ powershell.exe -ExecutionPolicy Bypass .\WIM-AppDeploy.ps1 -WIM "PDC_20XX" -Mode
 
 
 #>
-[CmdletBinding(SupportsShouldProcess = $true)]Param (
+[CmdletBinding(SupportsShouldProcess = $true)]param (
     [Parameter(Mandatory = $false, HelpMessage = 'specified location of the wim file.')]
     [ValidateNotNullOrEmpty()]
     [ValidateScript({
@@ -99,20 +103,20 @@ powershell.exe -ExecutionPolicy Bypass .\WIM-AppDeploy.ps1 -WIM "PDC_20XX" -Mode
 
     [Parameter(Mandatory = $false, HelpMessage = 'Changes the default location from of the local temp folder.')]
     [ValidateNotNullOrEmpty()]
-    [String]$LocalFolder = "C:\Temp",
+    [String]$LocalFolder = 'C:\Temp',
 
     [Parameter(Mandatory = $true, HelpMessage = 'Specified the installation mode: Install, Update or Uninstall')]
     [ValidateNotNullOrEmpty()]
-    [ValidateSet("Install", "Update", "Uninstall")]
+    [ValidateSet('Install', 'Update', 'Uninstall')]
     [string]$Mode,
 
     [Parameter(Mandatory = $false, HelpMessage = 'The Software Version, if none is specified, it will be extracted from the WIM name.')]
     [ValidateNotNullOrEmpty()]
-    [string]$Version = [regex]::Matches($WIM, "\d+(\.\d+)?").Value,
+    [string]$Version = [regex]::Matches($WIM, '\d+(\.\d+)?').Value,
 
     [Parameter(Mandatory = $false, HelpMessage = 'An array of XML filenames without extension, default <<Collection>>')]
     [ValidateNotNullOrEmpty()]
-    [string[]]$Files = @("Collection"),
+    [string[]]$Files = @('Collection'),
 
     [Parameter(Mandatory = $false, HelpMessage = 'Enable log file')]
     [switch]$Logging,
@@ -151,7 +155,8 @@ function Write-InstallLog {
         Autor: Timon Först
         Datum: 16.04.2025
     #>
-    Param
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param
     (
         [Parameter(Mandatory)]
         [string]$text,
@@ -161,14 +166,17 @@ function Write-InstallLog {
         [switch]$Fail
     )
     if ($Logging.IsPresent) {
-        $category = "INFO"
+        $category = 'INFO'
         if ($Info.IsPresent) {
-            $category = "INFO"
+            $category = 'INFO'
         }
         if ($Fail.IsPresent) {
-            $category = "ERROR"
+            $category = 'ERROR'
         }
-        "$(Get-Date -Format "yyyy-MM-dd HH:mm:ss.ms") [$($category)] $($text)" | Out-File "$script:LogFile" -Append
+        $logMessage = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss.ms') [$($category)] $($text)"
+        if ($PSCmdlet.ShouldProcess("[$($category)] $($text)", 'Log')) {
+            $logMessage | Out-File "$script:LogFile" -Append -WhatIf:$false
+        }
     }
 
 }
@@ -190,22 +198,30 @@ function Install-Update {
         Autor: Timon Först
         Datum: 16.04.2025
     #>
+    [CmdletBinding(SupportsShouldProcess = $true)]
     param (
         [Parameter()]
         [string]$Path = $Script:mountPath
     )
     # install updates
     # get all updates in folder
-    Write-InstallLog -text "Updates will be installed" -Info
-    $filepath = [System.IO.Path]::Combine($Path, "Updates")
-    $files = Get-ChildItem -Path $filepath -Exclude @("*.txt", "*.xml", "VBA")
+    Write-InstallLog -text 'Updates will be installed' -Info
+    $filepath = [System.IO.Path]::Combine($Path, 'Updates')
+
+    # Skip in WhatIf mode if path doesn't exist
+    if ($WhatIfPreference -and -not (Test-Path -Path $filepath)) {
+        Write-InstallLog -text "Would install updates from $filepath (WhatIf mode)" -Info
+        return
+    }
+
+    $files = Get-ChildItem -Path $filepath -Exclude @('*.txt', '*.xml', 'VBA')
     foreach ($file in $files) {
 
-        if ($file.Name -like "*msi") {
+        if ($file.Name -like '*msi') {
             #Adsso update
             $Arguments = '-qn -norestart'
         }
-        elseif ($file.Name -like "*Licensing*exe") {
+        elseif ($file.Name -like '*Licensing*exe') {
             #Licensing exe update
             $Arguments = '--unattendedmodeui none --mode unattended'
         }
@@ -213,11 +229,11 @@ function Install-Update {
         #     #Identity exe update
         #     $Arguments = '--unattendedmodeui none --mode unattended'
         # }
-        elseif ($file.Name -like "*AdODIS*exe") {
+        elseif ($file.Name -like '*AdODIS*exe') {
             #Identity exe update
             $Arguments = '--mode unattended'
         }
-        elseif ($file.Name -like "*vba*") {
+        elseif ($file.Name -like '*vba*') {
             #Identity exe update
             $Arguments = '/quiet /norestart'
         }
@@ -227,10 +243,12 @@ function Install-Update {
         }
         try {
             Write-InstallLog -text "Start Installation: $($file.Name) $Arguments" -Info
-            Start-Process -NoNewWindow -FilePath $file.FullName -ArgumentList $Arguments
-            # waiting to get sure that installation is done
-            Wait-Process -EA SilentlyContinue -Name $file | Select-Object -ExpandProperty BaseName
-            Write-InstallLog -text "Installed: $($file.Name)" -Info
+            if ($PSCmdlet.ShouldProcess($file.Name, 'Install Update')) {
+                Start-Process -NoNewWindow -FilePath $file.FullName -ArgumentList $Arguments
+                # waiting to get sure that installation is done
+                Wait-Process -EA SilentlyContinue -Name $file | Select-Object -ExpandProperty BaseName
+                Write-InstallLog -text "Installed: $($file.Name)" -Info
+            }
         }
         catch {
             Write-InstallLog -text "Install update $($file)" -Fail
@@ -258,21 +276,24 @@ function Install-AutodeskDeployment {
         Autor: Timon Först
         Datum: 16.04.2025
     #>
+    [CmdletBinding(SupportsShouldProcess = $true)]
     param (
         [Parameter()]
         [string]$Path = $Script:mountPath
     )
-    Write-InstallLog -text "Start Autodesk installer" -Info
+    Write-InstallLog -text 'Start Autodesk installer' -Info
     # call install autodesk deployment
     # Start-Process -NoNewWindow -FilePath $Path\Install.cmd -Wait
     foreach ($ConfigFullFilename in $ConfigFullFilenames) {
         Write-InstallLog -text "Started Installation of ConfigFile: $ConfigFullFilename" -Info
-        Start-Process -FilePath $([System.IO.Path]::Combine($Path, "Image", "Installer.exe")) -ArgumentList "-i deploy --offline_mode -q -o $ConfigFullFilename" -PassThru | Out-Null
-        # Waiting
-        Wait-Process -Name "Installer"
+        if ($PSCmdlet.ShouldProcess((Split-Path $ConfigFullFilename -Leaf), 'Install Autodesk Deployment')) {
+            Start-Process -FilePath $([System.IO.Path]::Combine($Path, 'Image', 'Installer.exe')) -ArgumentList "-i deploy --offline_mode -q -o $ConfigFullFilename" -PassThru | Out-Null
+            # Waiting
+            Wait-Process -Name 'Installer'
+        }
     }
 
-    Write-InstallLog -text "Autodesk Products installed" -Info
+    Write-InstallLog -text 'Autodesk Products installed' -Info
 }
 function Uninstall-AutodeskDeployment {
 
@@ -293,13 +314,20 @@ function Uninstall-AutodeskDeployment {
         Autor: Timon Först
         Datum: 16.04.2025
     #>
+    [CmdletBinding(SupportsShouldProcess = $true)]
     param (
         [Parameter(Mandatory = $false, HelpMessage = 'Path to the Autodesk Deployment')]
-        [string]$Path = [System.IO.Path]::Combine($mountPath, "image"),
+        [string]$Path = [System.IO.Path]::Combine($mountPath, 'image'),
         [Parameter(Mandatory = $false, HelpMessage = 'Optional: Products to uninstall')]
         [string[]]$Product
     )
     begin {
+        # Skip in WhatIf mode if path doesn't exist
+        if ($WhatIfPreference -and -not (Test-Path -Path $Path)) {
+            Write-InstallLog -text "Would uninstall Autodesk products from $Path (WhatIf mode)" -Info
+            return
+        }
+
         # Get the Autodesk Products from the path
         $adskProducts = (Get-ChildItem -Directory -Path $Path) | Where-Object { $_.Name -like "*$($Version)*" }
         if ($adskProducts.Count -eq 0) {
@@ -315,8 +343,8 @@ function Uninstall-AutodeskDeployment {
 
             try {
                 # get xml file
-                $setupxml = [System.IO.Path]::Combine($adskProduct.FullName, "setup.xml")
-                $setupextxml = [System.IO.Path]::Combine($adskProduct.FullName, "setup_ext.xml")
+                $setupxml = [System.IO.Path]::Combine($adskProduct.FullName, 'setup.xml')
+                $setupextxml = [System.IO.Path]::Combine($adskProduct.FullName, 'setup_ext.xml')
 
                 [xml]$xml = Get-Content $setupxml
                 $productname = $xml.Bundle.Identity.DisplayName
@@ -330,12 +358,14 @@ function Uninstall-AutodeskDeployment {
 
                 # start uninstall
                 Write-InstallLog -text "Uninstallation of $productname" -Info
-                Start-Process -FilePath $([System.IO.Path]::Combine($Path, "image", "Installer.exe")) -ArgumentList "-i uninstall -q --manifest $setupxml --extension_manifest $setupextxml" -Wait
+                if ($PSCmdlet.ShouldProcess($productname, 'Uninstall Autodesk Product')) {
+                    Start-Process -FilePath $([System.IO.Path]::Combine($Path, 'image', 'Installer.exe')) -ArgumentList "-i uninstall -q --manifest $setupxml --extension_manifest $setupextxml" -Wait
 
-                Write-InstallLog -text "Uninstallation: complete" -Info
+                    Write-InstallLog -text 'Uninstallation: complete' -Info
+                }
             }
             catch {
-                Write-InstallLog -text "Uninstallation: not successful" -Fail
+                Write-InstallLog -text 'Uninstallation: not successful' -Fail
             }
         }
     }
@@ -349,9 +379,9 @@ function Set-AutodeskDeployment {
     [CmdletBinding(SupportsShouldProcess = $true)]
     param (
         [Parameter(Mandatory = $false, HelpMessage = 'Path to the Autodesk Deployment')]
-        [string]$Path = [System.IO.Path]::Combine($mountPath, "image"),
+        [string]$Path = [System.IO.Path]::Combine($mountPath, 'image'),
         [Parameter(Mandatory = $false, HelpMessage = 'XML file to change. Default is "setup_ext.xml"')]
-        [string]$xmlFileName = "setup_ext.xml",
+        [string]$xmlFileName = 'setup_ext.xml',
         [Parameter(Mandatory = $false, HelpMessage = 'One or More Language Packs to keep. Name must be in English (e.g. German, Polish). It has to be available in the deployment. Default is "German"')]
         [string[]]$Language,
         [Parameter(Mandatory = $false, HelpMessage = 'Remove a specified update')]
@@ -359,6 +389,12 @@ function Set-AutodeskDeployment {
     )
 
     begin {
+        # Skip in WhatIf mode if path doesn't exist
+        if ($WhatIfPreference -and -not (Test-Path -Path $Path)) {
+            Write-InstallLog -text "Would process Autodesk Deployment files in $Path (WhatIf mode)" -Info
+            return
+        }
+
         # Get the Autodesk Products from the path
         $adskProducts = (Get-ChildItem -Directory -Path $Path) | Where-Object { $_.Name -like "*$($Version)*" }
         if ($adskProducts.Count -eq 0) {
@@ -366,7 +402,7 @@ function Set-AutodeskDeployment {
             return
         }
         else {
-            Write-InstallLog -text "Autodesk Products found: $($adskProducts.Name -join ", ")" -Info
+            Write-InstallLog -text "Autodesk Products found: $($adskProducts.Name -join ', ')" -Info
         }
     }
 
@@ -381,7 +417,7 @@ function Set-AutodeskDeployment {
 
             # set namespace
             [System.Xml.XmlNamespaceManager]$ns = New-Object System.Xml.XmlNamespaceManager $xml.NameTable
-            $ns.AddNamespace("ns", $xml.BundleExtension.xmlns)
+            $ns.AddNamespace('ns', $xml.BundleExtension.xmlns)
 
             # Language Packs
             if ($Language.Length -gt 0) {
@@ -481,6 +517,7 @@ function Install-CideonTool {
         Autor: Timon Först
         Datum: 16.04.2025
     #>
+    [CmdletBinding(SupportsShouldProcess = $true)]
     param (
         [Parameter()]
         [string]$Path = $Script:mountPath,
@@ -499,26 +536,33 @@ function Install-CideonTool {
     # install updates
     # get all updates in folder
 
-    Write-InstallLog -text " Updates will be installed" -Info
-    $filepath = [System.IO.Path]::Combine($Path, "Cideon")
+    Write-InstallLog -text ' Updates will be installed' -Info
+    $filepath = [System.IO.Path]::Combine($Path, 'Cideon')
+
+    # Skip in WhatIf mode if path doesn't exist
+    if ($WhatIfPreference -and -not (Test-Path -Path $filepath)) {
+        Write-InstallLog -text "Would install CIDEON tools from $filepath (WhatIf mode)" -Info
+        return
+    }
+
     $files = Get-ChildItem -Path $filepath -Exclude *.txt
     foreach ($file in $files) {
-        if ($file.Name -like "CIDEON.VAULT.TOOLBOX*") {
+        if ($file.Name -like 'CIDEON.VAULT.TOOLBOX*') {
             $features = @()
             if ($VaultToolboxStandard.IsPresent) {
-                $features += "STANDARD"
+                $features += 'STANDARD'
             }
             if ($VaultToolboxPro.IsPresent) {
-                $features += "CIDEON_VAULT_TOOLBOX"
+                $features += 'CIDEON_VAULT_TOOLBOX'
             }
             if ($VaultToolboxObserver.IsPresent) {
-                $features += "CIDEON_VAULT_AddOns"
+                $features += 'CIDEON_VAULT_AddOns'
             }
             if ($VaultToolboxClassification.IsPresent) {
-                $features += "CIDEON_INVENTOR_CLASSIFICATION_Addin"
+                $features += 'CIDEON_INVENTOR_CLASSIFICATION_Addin'
             }
             if ($VaultToolboxUpdate.IsPresent) {
-                $features += "CIDEON_UPDATE_EXTENSION"
+                $features += 'CIDEON_UPDATE_EXTENSION'
             }
             #Toolbox
             $Arguments = "ADDLOCAL=$($features -join ',') /quiet /passive"
@@ -528,8 +572,10 @@ function Install-CideonTool {
             $Arguments = '/qn'
         }
         try {
-            Start-Process -FilePath $file.FullName -ArgumentList $Arguments -Wait
-            Write-InstallLog -text "Installed: $($file.Name)" -Info
+            if ($PSCmdlet.ShouldProcess($file.Name, 'Install CIDEON Tool')) {
+                Start-Process -FilePath $file.FullName -ArgumentList $Arguments -Wait
+                Write-InstallLog -text "Installed: $($file.Name)" -Info
+            }
         }
         catch {
             Write-InstallLog -text "CIDEON Install Error for: $($file.Name)" -Fail
@@ -565,18 +611,27 @@ function Disable-VaultExtension {
 
         Formally this was function was called Move-CIDEONToolboxUnused, but this was not a good name
     #>
+    [CmdletBinding(SupportsShouldProcess = $true)]
     param (
         [Parameter()]
         [string]$Version = $Script:Version,
 
         [Parameter()]
-        [string]$Filter = "CIDEON.Vault*",
+        [string]$Filter = 'CIDEON.Vault*',
 
         [Parameter()]
-        [string[]]$Keep = @("CIDEON.Vault.Toolbox", "Cideon.Vault.JobHandler", "CIDEON.Vault.Explorer.PartsList")
+        [string[]]$Keep = @('CIDEON.Vault.Toolbox', 'Cideon.Vault.JobHandler', 'CIDEON.Vault.Explorer.PartsList')
     )
     #Get Extension folder
-    $Folder = Get-Item -Path "C:\ProgramData\Autodesk\Vault $Version\Extensions"
+    $extensionPath = "C:\ProgramData\Autodesk\Vault $Version\Extensions"
+
+    # Skip in WhatIf mode if path doesn't exist
+    if ($WhatIfPreference -and -not (Test-Path -Path $extensionPath)) {
+        Write-InstallLog -text "Would disable Vault extensions from $extensionPath (WhatIf mode)" -Info
+        return
+    }
+
+    $Folder = Get-Item -Path $extensionPath
     # Get all folders from Standard Toolbox, filter out the folders to keep
     $FolderDisable = Get-ChildItem -Path $Folder | Where-Object { $_.Name -like $Filter } | Where-Object { $_.Name -notin $Keep }
     # Move Folders one folder obove
@@ -584,10 +639,14 @@ function Disable-VaultExtension {
         $destination = "C:\ProgramData\Autodesk\Vault $Version"
         $destPath = [System.IO.Path]::Combine($destination, $item.Name)
         if (Test-Path -Path $destPath) {
-            Remove-Item -Path $destPath -Recurse -Force
+            if ($PSCmdlet.ShouldProcess($destPath, 'Remove existing folder')) {
+                Remove-Item -Path $destPath -Recurse -Force
+            }
         }
 
-        Move-Item -Path $item.FullName -Destination $destination -Force
+        if ($PSCmdlet.ShouldProcess($item.Name, 'Disable Vault Extension')) {
+            Move-Item -Path $item.FullName -Destination $destination -Force
+        }
     }
 
 }
@@ -614,7 +673,7 @@ function Get-RealUserName {
                 # and get the user name of the process owner
                 $normalUserNames = (Get-Process -Name explorer -ErrorAction Stop | ForEach-Object {
                         $procCim = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = $($_.Id)"
-                    (Invoke-CimMethod -InputObject $procCim -MethodName GetOwner).User
+                        (Invoke-CimMethod -InputObject $procCim -MethodName GetOwner).User
                     }) | Where-Object { $_ -ne $env:USERNAME }
 
                 # if there are multiple usernames, select the first one
@@ -630,7 +689,7 @@ function Get-RealUserName {
             }
         }
         catch {
-            Write-InstallLog -text "Could not determine normal user name." -Fail
+            Write-InstallLog -text 'Could not determine normal user name.' -Fail
             return $env:USERNAME
 
         }
@@ -670,7 +729,7 @@ function Get-UserSID {
     begin {
         # validate that $DomainUser or $LocalUser is set, but not both
         if ($DomainUser.IsPresent -and $LocalUser.IsPresent) {
-            Write-InstallLog -text "You can only set one of the parameters DomainUser or LocalUser" -Fail
+            Write-InstallLog -text 'You can only set one of the parameters DomainUser or LocalUser' -Fail
             return
         }
         # validate that $DomainUser or $LocalUser is set, if not, set $DomainUser to true
@@ -720,7 +779,7 @@ function Set-InventorProjectFile {
     [CmdletBinding(SupportsShouldProcess = $true)]
     param (
         [string]$Version = $Script:Version,
-        [string]$File = "C:\Vault_Work\CDN_Vault\CDN_Vault.ipj"
+        [string]$File = 'C:\Vault_Work\CDN_Vault\CDN_Vault.ipj'
     )
 
     begin {
@@ -744,11 +803,11 @@ function Set-InventorProjectFile {
                 New-Item -Path $regPath -Force | Out-Null
             }
             # Set the Registry PathFile value to the specified regPath. check before if PathFile it exists, then we set it, instead of creating it
-            if (-not (Get-ItemProperty -Path $regPath -Name "PathFile" -ErrorAction SilentlyContinue)) {
-                New-ItemProperty -Path $regPath -Name "PathFile" -Value $File -PropertyType String -Force | Out-Null
+            if (-not (Get-ItemProperty -Path $regPath -Name 'PathFile' -ErrorAction SilentlyContinue)) {
+                New-ItemProperty -Path $regPath -Name 'PathFile' -Value $File -PropertyType String -Force | Out-Null
             }
             else {
-                Set-ItemProperty -Path $regPath -Name "PathFile" -Value $File | Out-Null
+                Set-ItemProperty -Path $regPath -Name 'PathFile' -Value $File | Out-Null
             }
         }
     }
@@ -818,6 +877,7 @@ function Copy-Local {
         Formally this was function was called Copy-CIDEONTools, but this was not a good name, because it is not only copying CIDEON Tools, but also the local files.
     #>
 
+    [CmdletBinding(SupportsShouldProcess = $true)]
     param (
         [Parameter()]
         [string]$Path = $Script:mountPath,
@@ -829,32 +889,38 @@ function Copy-Local {
     begin {
         # if sourcefolder is empty, use all folders in the Local folder
         if (-not $SourceFolder) {
-            $SourceFolder = Get-ChildItem -Path ([System.IO.Path]::Combine($Path, "Local")) -Directory | Select-Object -ExpandProperty Name
+            $localPath = [System.IO.Path]::Combine($Path, 'Local')
+            # Skip in WhatIf mode if path doesn't exist
+            if ($WhatIfPreference -and -not (Test-Path -Path $localPath)) {
+                Write-InstallLog -text "Would copy local files from $localPath (WhatIf mode)" -Info
+                return
+            }
+            $SourceFolder = Get-ChildItem -Path $localPath -Directory | Select-Object -ExpandProperty Name
         }
         # if targetfolder is empty, use for each sourcefolder C:\ as target
         if (-not $TargetFolder) {
-            $TargetFolder = @("C:\") * $SourceFolder.Count
+            $TargetFolder = @('C:\') * $SourceFolder.Count
         }
         # if targetfolder count is not equal to sourcefolder count, throw an error
         if ($SourceFolder.Count -ne $TargetFolder.Count) {
-            Write-InstallLog -text "Source and Target quantities must be the same" -Fail
+            Write-InstallLog -text 'Source and Target quantities must be the same' -Fail
             return
         }
 
     }
     process {
         try {
-            Write-InstallLog -text "Local Folders will be copied" -Info
+            Write-InstallLog -text 'Local Folders will be copied' -Info
 
             #check if the array sizes from source and target are the same
 
             # copy
             foreach ($Source in $SourceFolder) {
-                $localpath = [System.IO.Path]::Combine($Path, "Local", $Source)
+                $localpath = [System.IO.Path]::Combine($Path, 'Local', $Source)
                 Write-InstallLog -text "Local folder $Source" -Info
 
                 # exception for Users folder, because we have to copy it to the user profile folder
-                if ($Source -eq "Users") {
+                if ($Source -eq 'Users') {
                     # get subfolders in Users folder
                     $UsersFolder = Get-ChildItem -Path $localpath -Directory
 
@@ -862,7 +928,7 @@ function Copy-Local {
                     foreach ($userFolder in $UsersFolder) {
 
                         # check folder USERNAME, this is the folder for the current user
-                        if ($userFolder.Name -eq "USERNAME") {
+                        if ($userFolder.Name -eq 'USERNAME') {
                             $subFolder = Get-RealUserName
                         }
                         # if the userFolder is not USERNAME, we use the folder name as subfolder
@@ -870,7 +936,9 @@ function Copy-Local {
                             $subFolder = $userFolder.Name
                         }
                         # copy the user folder to the target folder
-                        Copy-Item -Path ([System.IO.Path]::Combine($userFolder.FullName, "*")) -Destination ([System.IO.Path]::Combine($($TargetFolder[$($SourceFolder.IndexOf($Source))]), "Users", $subFolder)) -Force -Recurse
+                        if ($PSCmdlet.ShouldProcess($userFolder.FullName, 'Copy user folder')) {
+                            Copy-Item -Path ([System.IO.Path]::Combine($userFolder.FullName, '*')) -Destination ([System.IO.Path]::Combine($($TargetFolder[$($SourceFolder.IndexOf($Source))]), 'Users', $subFolder)) -Force -Recurse
+                        }
                     }
 
 
@@ -878,12 +946,14 @@ function Copy-Local {
                 }
                 # normal case for ProgramData and other folders
                 else {
-                    Copy-Item -Path $localpath -Destination $TargetFolder[$($SourceFolder.IndexOf($Source))] -Force -Recurse
+                    if ($PSCmdlet.ShouldProcess($localpath, 'Copy user folder')) {
+                        Copy-Item -Path $localpath -Destination $TargetFolder[$($SourceFolder.IndexOf($Source))] -Force -Recurse
+                    }
                 }
             }
 
 
-            Write-InstallLog -text "Local Folders is done" -Info
+            Write-InstallLog -text 'Local Folders is done' -Info
 
         }
 
@@ -932,11 +1002,11 @@ function Uninstall-Program {
         [Parameter()]
         [string]$Publisher,
         [Parameter(Mandatory = $false, HelpMessage = 'Filter Operator for DisplayName. Default is -match')]
-        [ValidateSet("-match", "-notmatch","-eq", "-like", "-notlike","-gt", "-lt", "-ge", "-le")]
-        [string]$FilterOperator = "-match"
+        [ValidateSet('-match', '-notmatch', '-eq', '-like', '-notlike', '-gt', '-lt', '-ge', '-le')]
+        [string]$FilterOperator = '-match'
     )
     if ($Publisher -eq '' -and $DisplayName -eq '') {
-        Write-InstallLog -text "No Software or Publisher specified to uninstall" -Fail
+        Write-InstallLog -text 'No Software or Publisher specified to uninstall' -Fail
         return
     }
     $installedProducts = Get-InstalledProgram -Publisher $Publisher -DisplayName $DisplayName -FilterOperator $FilterOperator
@@ -947,21 +1017,21 @@ function Uninstall-Program {
             # gets the string before the first / - this is the exe filepath
             $uninstaller = $installedProduct.UninstallString
             # msiexec with / arguments
-            if ($uninstaller -match "/") {
+            if ($uninstaller -match '/') {
 
-                $filePath = ($installedProduct.UninstallString -split "/" , 2)[0]
+                $filePath = ($installedProduct.UninstallString -split '/' , 2)[0]
                 # gets the string after the first / - these are the arguments
                 # we have to add the first / again, and put quiet after the additional arguments
 
-                $arguments = "/" + $(($installedProduct.UninstallString -split '/' , 2)[1]) + " /quiet /passive"
+                $arguments = '/' + $(($installedProduct.UninstallString -split '/' , 2)[1]) + ' /quiet /passive'
             }
             else {
                 # ODIS Uninstaller with - arguments
-                $filePath = ($installedProduct.UninstallString -split "-" , 2)[0]
-                $arguments = "-" + $(($installedProduct.UninstallString -split '-' , 2)[1]) + " -q"
+                $filePath = ($installedProduct.UninstallString -split '-' , 2)[0]
+                $arguments = '-' + $(($installedProduct.UninstallString -split '-' , 2)[1]) + ' -q'
             }
 
-            if ($PSCmdlet.ShouldProcess($installedProduct.DisplayName, "Uninstall")) {
+            if ($PSCmdlet.ShouldProcess($installedProduct.DisplayName, 'Uninstall')) {
                 Start-Process -NoNewWindow -FilePath $filePath -ArgumentList $arguments -Wait
             }
         }
@@ -1003,8 +1073,8 @@ function Get-InstalledProgram {
         [Parameter()]
         [string]$Publisher,
         [Parameter(Mandatory = $false, HelpMessage = 'Filter Operator for DisplayName. Default is -match')]
-        [ValidateSet("-match", "-notmatch","-eq", "-like", "-notlike","-gt", "-lt", "-ge", "-le")]
-        [string]$FilterOperator = "-match"
+        [ValidateSet('-match', '-notmatch', '-eq', '-like', '-notlike', '-gt', '-lt', '-ge', '-le')]
+        [string]$FilterOperator = '-match'
     )
 
     Set-StrictMode -Off | Out-Null
@@ -1027,44 +1097,44 @@ function Set-CIDEONLanguageVariable {
     $lngenv = Get-WinSystemLocale | Select-Object -ExpandProperty Name
     Write-InstallLog -text "Set language Variables for $lngenv" -Info
     switch ($lngenv) {
-        "de-DE" {
-            if ($PSCmdlet.ShouldProcess("Set CDN_LNG and CDN_ITEM_LNG for de-DE")) {
+        'de-DE' {
+            if ($PSCmdlet.ShouldProcess('Set CDN_LNG and CDN_ITEM_LNG for de-DE')) {
                 [System.Environment]::SetEnvironmentVariable('CDN_LNG', 'de-DE', 'Machine')
                 [System.Environment]::SetEnvironmentVariable('CDN_ITEM_LNG', 'AT', 'Machine')
             }
         }
-        "de-AT" {
-            if ($PSCmdlet.ShouldProcess("Set CDN_LNG and CDN_ITEM_LNG for de-AT")) {
+        'de-AT' {
+            if ($PSCmdlet.ShouldProcess('Set CDN_LNG and CDN_ITEM_LNG for de-AT')) {
                 [System.Environment]::SetEnvironmentVariable('CDN_LNG', 'de-DE', 'Machine')
                 [System.Environment]::SetEnvironmentVariable('CDN_ITEM_LNG', 'AT', 'Machine')
             }
         }
-        "cz-CZ" {
-            if ($PSCmdlet.ShouldProcess("Set CDN_LNG and CDN_ITEM_LNG for cz-CZ")) {
+        'cz-CZ' {
+            if ($PSCmdlet.ShouldProcess('Set CDN_LNG and CDN_ITEM_LNG for cz-CZ')) {
                 [System.Environment]::SetEnvironmentVariable('CDN_LNG', 'en-US', 'Machine')
                 [System.Environment]::SetEnvironmentVariable('CDN_ITEM_LNG', 'CZ', 'Machine')
             }
         }
-        "en-GB" {
-            if ($PSCmdlet.ShouldProcess("Set CDN_LNG and CDN_ITEM_LNG for en-GB")) {
+        'en-GB' {
+            if ($PSCmdlet.ShouldProcess('Set CDN_LNG and CDN_ITEM_LNG for en-GB')) {
                 [System.Environment]::SetEnvironmentVariable('CDN_LNG', 'en-US', 'Machine')
                 [System.Environment]::SetEnvironmentVariable('CDN_ITEM_LNG', 'UK', 'Machine')
             }
         }
-        "pl-PL" {
-            if ($PSCmdlet.ShouldProcess("Set CDN_LNG and CDN_ITEM_LNG for pl-PL")) {
+        'pl-PL' {
+            if ($PSCmdlet.ShouldProcess('Set CDN_LNG and CDN_ITEM_LNG for pl-PL')) {
                 [System.Environment]::SetEnvironmentVariable('CDN_LNG', 'en-US', 'Machine')
                 [System.Environment]::SetEnvironmentVariable('CDN_ITEM_LNG', 'PL', 'Machine')
             }
         }
-        "nl-NL" {
-            if ($PSCmdlet.ShouldProcess("Set CDN_LNG and CDN_ITEM_LNG for nl-NL")) {
+        'nl-NL' {
+            if ($PSCmdlet.ShouldProcess('Set CDN_LNG and CDN_ITEM_LNG for nl-NL')) {
                 [System.Environment]::SetEnvironmentVariable('CDN_LNG', 'en-US', 'Machine')
                 [System.Environment]::SetEnvironmentVariable('CDN_ITEM_LNG', 'NL', 'Machine')
             }
         }
-        Default {
-            if ($PSCmdlet.ShouldProcess("Set CDN_LNG and CDN_ITEM_LNG for Default")) {
+        default {
+            if ($PSCmdlet.ShouldProcess('Set CDN_LNG and CDN_ITEM_LNG for Default')) {
                 [System.Environment]::SetEnvironmentVariable('CDN_LNG', 'en-US', 'Machine')
                 [System.Environment]::SetEnvironmentVariable('CDN_ITEM_LNG', 'UK', 'Machine')
             }
@@ -1094,11 +1164,11 @@ function Set-CIDEONVariable {
         [Parameter()]
         [string]$Version = $Script:Version
     )
-    Write-InstallLog -text "Set CIDEON Variables" -Info
+    Write-InstallLog -text 'Set CIDEON Variables' -Info
 
     $CDN_VAULT_EXTENSIONS = "C:\ProgramData\Autodesk\Vault $($Version)\Extensions\"
 
-    if ($PSCmdlet.ShouldProcess("Environment", "Set CDN_PROGRAMDATA, CDN_PROGRAM_DIR, CDN_VAULT_EXTENSIONS")) {
+    if ($PSCmdlet.ShouldProcess('Environment', 'Set CDN_PROGRAMDATA, CDN_PROGRAM_DIR, CDN_VAULT_EXTENSIONS')) {
         [System.Environment]::SetEnvironmentVariable('CDN_PROGRAMDATA', 'C:\ProgramData\CIDEON\', 'Machine')
         [System.Environment]::SetEnvironmentVariable('CDN_PROGRAM_DIR', 'C:\Program Files\CIDEON\', 'Machine')
         [System.Environment]::SetEnvironmentVariable('CDN_VAULT_EXTENSIONS', $CDN_VAULT_EXTENSIONS, 'Machine')
@@ -1121,25 +1191,28 @@ function Rename-RegistryInstallationPath {
         Autor: Timon Först
         Datum: 16.04.2025
    #>
+    [CmdletBinding(SupportsShouldProcess = $true)]
 
     # if your repair the autodesk software, it will look localy to the wim
     # we change this to the serverpath
-    $RegistryPath = "HKLM:\SOFTWARE\Classes\Installer\Products"
+    $RegistryPath = 'HKLM:\SOFTWARE\Classes\Installer\Products'
     $Registry = Get-ChildItem $RegistryPath -Recurse
-    $SearchQuery = [System.IO.Path]::Combine($mountPath, "image")
-    $NewValue = [System.IO.Path]::Combine($Path, [System.IO.Path]::GetFileNameWithoutExtension($wimFile.Name) , "image")
+    $SearchQuery = [System.IO.Path]::Combine($mountPath, 'image')
+    $NewValue = [System.IO.Path]::Combine($Path, [System.IO.Path]::GetFileNameWithoutExtension($wimFile.Name) , 'image')
 
-    Write-InstallLog -text "Reg Change" -Info
+    Write-InstallLog -text 'Reg Change' -Info
 
     foreach ($a in $Registry) {
         $a.Property | Where-Object {
-            $a.GetValue($_) -Like "*$SearchQuery*"
+            $a.GetValue($_) -like "*$SearchQuery*"
         } | ForEach-Object {
             $CurrentValue = $a.GetValue($_)
             $ReplacedValue = $CurrentValue.Replace($SearchQuery, $NewValue)
             Write-InstallLog -text "$a\$_" -Info
             Write-InstallLog -text "From '$CurrentValue' to '$ReplacedValue'" -Info
-            Set-ItemProperty -Path Registry::$a -Name $_ -Value $ReplacedValue
+            if ($PSCmdlet.ShouldProcess($a, 'Update registry path')) {
+                Set-ItemProperty -Path Registry::$a -Name $_ -Value $ReplacedValue
+            }
         }
     }
 }
@@ -1185,25 +1258,31 @@ function Get-WIM {
 
         # copy wim to local path
         if ($Script:NoDownload.IsPresent) {
-            Write-InstallLog -text "No Download of WIM file to local folder. Mounting from server." -Info
+            Write-InstallLog -text 'No Download of WIM file to local folder. Mounting from server.' -Info
             # mount wim from network
             $localwimFile = $File.FullName
         }
         else {
             # check if wim file exists
             if ([System.IO.File]::Exists($localwimFile)) {
-                Write-InstallLog -text "WIM file already exists, no download needed" -Info
+                Write-InstallLog -text 'WIM file already exists, no download needed' -Info
             }
             else {
                 Write-InstallLog -text "Copy $($File.FullName) to $Folder" -Info
                 Copy-Item $File.FullName $Folder -Force
-                Write-InstallLog -text "WIM file copied" -Info
+                Write-InstallLog -text 'WIM file copied' -Info
             }
         }
     }
 
     end {
-        return (Get-Item -Path $localwimFile)
+        # In WhatIf mode, return the source file instead of trying to get the copied file
+        if ($WhatIfPreference) {
+            return $File
+        }
+        else {
+            return (Get-Item -Path $localwimFile)
+        }
     }
 }
 function Mount-WIM {
@@ -1229,6 +1308,7 @@ function Mount-WIM {
 
         Formally this was function was called Mount-ADSKwim, but this was not a good name.
    #>
+    [CmdletBinding(SupportsShouldProcess = $true)]
     param (
         [Parameter()]
         $File = $Script:wimFile,
@@ -1243,14 +1323,18 @@ function Mount-WIM {
     }
     process {
         # mount local wim
-        Mount-WindowsImage -ImagePath $File.FullName -Index 1 -Path $Path | Out-Null
-        Write-InstallLog -text "WIM $File.FullName mounted to $Path" -Info
+        if ($PSCmdlet.ShouldProcess($File.FullName, "Mount WIM to $Path")) {
+            Mount-WindowsImage -ImagePath $File.FullName -Index 1 -Path $Path | Out-Null
+            Write-InstallLog -text "WIM $File.FullName mounted to $Path" -Info
+        }
 
-        # check if configfile exists
-        foreach ($ConfigFullFilename in $ConfigFullFilenames) {
-            if (-not [System.IO.File]::Exists($ConfigFullFilename)) {
-                Write-InstallLog -text "ConfigFile $ConfigFullFilename does not exist" -Fail
-                throw "ConfigFile $ConfigFullFilename does not exist"
+        # check if configfile exists (skip in WhatIf mode)
+        if (-not $WhatIfPreference) {
+            foreach ($ConfigFullFilename in $ConfigFullFilenames) {
+                if (-not [System.IO.File]::Exists($ConfigFullFilename)) {
+                    Write-InstallLog -text "ConfigFile $ConfigFullFilename does not exist" -Fail
+                    throw "ConfigFile $ConfigFullFilename does not exist"
+                }
             }
         }
     }
@@ -1284,6 +1368,7 @@ function Dismount-WIM {
 
         Formally this was function was called Dismount-ADSKwim, but this was not a good name.
    #>
+    [CmdletBinding(SupportsShouldProcess = $true)]
     param (
         [Parameter()]
         $File = $Script:wimFile,
@@ -1300,13 +1385,28 @@ function Dismount-WIM {
     process {
 
         if (-not $File -and -not $all.IsPresent ) {
-            Write-InstallLog -text "No WIM specified to dismount" -Fail
+            Write-InstallLog -text 'No WIM specified to dismount' -Fail
             return
         }
+
+        # Skip actual dismount in WhatIf mode
+        if ($WhatIfPreference) {
+            if ($File) {
+                Write-InstallLog -text "Dismounting WIM $($File.Name)" -Info
+                if ($PSCmdlet.ShouldProcess($File.FullName, 'Dismount WIM')) {
+                    Write-InstallLog -text "Would dismount WIM $($File.FullName) (WhatIf mode)" -Info
+                }
+            }
+            else {
+                Write-InstallLog -text 'Would dismount all WIM files (WhatIf mode)' -Info
+            }
+            return
+        }
+
         # dismount the wim file and remove mount folder
         # Get wim file
         if ($all.IsPresent) {
-            $images = Get-WindowsImage -Mounted | Where-Object { $_.MountStatus -eq "Ok" }
+            $images = Get-WindowsImage -Mounted | Where-Object { $_.MountStatus -eq 'Ok' }
         }
         else {
             $images = Get-WindowsImage -Mounted | Where-Object { $_.ImagePath -like "*$File*" }
@@ -1315,16 +1415,21 @@ function Dismount-WIM {
         foreach ($image in $images) {
             Write-InstallLog -text "Dismounting WIM $($image.ImagePath)" -Info
             try {
-                Dismount-WindowsImage -Path $image.Path -Discard | Out-Null
-                Write-InstallLog -text "WIM $($image.ImagePath) dismounted" -Info
+                if ($PSCmdlet.ShouldProcess($image.ImagePath, 'Dismount WIM')) {
+                    Dismount-WindowsImage -Path $image.Path -Discard | Out-Null
+                    Write-InstallLog -text "WIM $($image.ImagePath) dismounted" -Info
 
-                if ($purge.IsPresent) {
-
-                    # delete local wim file
-                    Remove-Item -Path $image.ImagePath -Force
-                    Write-InstallLog -text "WIM $deleteWIM localy deleted" -Info
+                    if ($purge.IsPresent) {
+                        # delete local wim file
+                        if ($PSCmdlet.ShouldProcess($image.ImagePath, 'Delete WIM file')) {
+                            Remove-Item -Path $image.ImagePath -Force
+                            Write-InstallLog -text "WIM $deleteWIM localy deleted" -Info
+                        }
+                    }
+                    if ($PSCmdlet.ShouldProcess($image.Path, 'Delete WIM file')) {
+                        Remove-Item -Path $image.Path -Force -Recurse
+                    }
                 }
-                Remove-Item -Path $image.Path -Force -Recurse
             }
             catch {
                 Register-WIMDismountTask
@@ -1367,9 +1472,9 @@ function Register-WIMDismountTask {
     Register-ScheduledTask `
         -Action $STAction `
         -Trigger $STTrigger `
-        -TaskName "CleanupWIM" `
-        -Description "Clean up WIM Mount points that failed to dismount properly" `
-        -User "NT AUTHORITY\SYSTEM" `
+        -TaskName 'CleanupWIM' `
+        -Description 'Clean up WIM Mount points that failed to dismount properly' `
+        -User 'NT AUTHORITY\SYSTEM' `
         -RunLevel Highest `
         -Force
 }
@@ -1420,11 +1525,11 @@ function Set-AutodeskUpdate {
         $Value = 1
     }
     # Path to Registry
-    $ODISPath = "HKCU:\SOFTWARE\Autodesk\ODIS"
+    $ODISPath = 'HKCU:\SOFTWARE\Autodesk\ODIS'
 
     if ($PSCmdlet.ShouldProcess("$ODISPath", "Set DisableManualUpdateInstall to $Value")) {
         # Check if ODIS Key exists
-        If (!(Test-Path $ODISPath)) {
+        if (!(Test-Path $ODISPath)) {
             #create
             $ODIS = New-Item -Path $ODISPath
             Write-InstallLog -text "Created $ODISPath" -Info
@@ -1436,12 +1541,12 @@ function Set-AutodeskUpdate {
         # Check if Property exists
         if ($null -eq (Get-ItemProperty -Path $ODIS.PSPath).DisableManualUpdateInstall) {
             #create
-            New-ItemProperty -Path $ODIS.PSPath -Name "DisableManualUpdateInstall" -Value $Value -PropertyType "DWORD" | Out-Null
+            New-ItemProperty -Path $ODIS.PSPath -Name 'DisableManualUpdateInstall' -Value $Value -PropertyType 'DWORD' | Out-Null
             Write-InstallLog -text "Created $($ODIS.PSPath)\DisableManualUpdateInstall with $Value" -Info
         }
         else {
             #set
-            Set-ItemProperty -Path $ODIS.PSPath -Name "DisableManualUpdateInstall" -Value $Value | Out-Null
+            Set-ItemProperty -Path $ODIS.PSPath -Name 'DisableManualUpdateInstall' -Value $Value | Out-Null
             Write-InstallLog -text "Set $($ODIS.PSPath)\DisableManualUpdateInstall to $Value" -Info
         }
     }
@@ -1458,19 +1563,19 @@ function Get-AppLogError {
     begin {
 
         # Check Windows Application logs for errors
-        $logErrors = Get-WinEvent -LogName Application -ErrorAction SilentlyContinue | Where-Object { $_.LevelDisplayName -eq "Error" -and $_.TimeCreated -gt $Start }
+        $logErrors = Get-WinEvent -LogName Application -ErrorAction SilentlyContinue | Where-Object { $_.LevelDisplayName -eq 'Error' -and $_.TimeCreated -gt $Start }
         # filter for MsiInstaller errors
-        $logErrors = $logErrors | Where-Object { $_.ProviderName -like "MsiInstaller" }
+        $logErrors = $logErrors | Where-Object { $_.ProviderName -like 'MsiInstaller' }
     }
 
     process {
 
         if ($logErrors) {
-            Write-InstallLog -text "Windows AppLog error messages - START" -Info
+            Write-InstallLog -text 'Windows AppLog error messages - START' -Info
             foreach ($logError in $logErrors) {
                 Write-InstallLog -text "AppLog: $($logError.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss.ff')) $($logError.ProviderName): $($logError.Message)" -Fail
             }
-            Write-InstallLog -text "Windows AppLog error messages - END" -Info
+            Write-InstallLog -text 'Windows AppLog error messages - END' -Info
         }
     }
 
@@ -1497,7 +1602,7 @@ $logfile = "Install_Autodesk_$($Version).log"
 $script:LogFile = [System.IO.Path]::Combine($LocalFolder, $logfile)
 
 #create local path
-If (!(Test-Path $LocalFolder)) {
+if (!(Test-Path $LocalFolder)) {
     New-Item -Path $LocalFolder -ItemType Directory | Out-Null
     Write-InstallLog -text "Created $LocalFolder" -Info
 }
@@ -1510,21 +1615,21 @@ $StartTime = Get-Date
 $wimFiles = Get-ChildItem -Path $Path -Filter *.wim
 
 # Filter wim Files of specified command
-$wimFiles = $wimFiles | Where-Object { $_.Name -match ($WIM + ".wim") }
+$wimFiles = $wimFiles | Where-Object { $_.Name -match ($WIM + '.wim') }
 
 
 foreach ($wimFile in $wimFiles) {
 
     Write-InstallLog -text "WIM File: $wimFile" -Info
     # local mount Path
-    $mountPath = [System.IO.Path]::Combine($LocalFolder, "mount_" + [System.IO.Path]::GetFileNameWithoutExtension($wimFile.Name))
+    $mountPath = [System.IO.Path]::Combine($LocalFolder, 'mount_' + [System.IO.Path]::GetFileNameWithoutExtension($wimFile.Name))
 
     # Configfiles
     $ConfigFullFilenames = @()
 
     # set the configfiles
     foreach ($ConfigFile in $Files) {
-        $ConfigFullFilenames += [System.IO.Path]::Combine($mountPath, "Image", $ConfigFile + ".xml")
+        $ConfigFullFilenames += [System.IO.Path]::Combine($mountPath, 'Image', $ConfigFile + '.xml')
     }
 
 
@@ -1532,7 +1637,7 @@ foreach ($wimFile in $wimFiles) {
 
 
     #create local path
-    If (!(Test-Path $mountPath)) {
+    if (!(Test-Path $mountPath)) {
         New-Item -Path $mountPath -ItemType Directory | Out-Null
         Write-InstallLog -text "Created $mountPath" -Info
     }
@@ -1541,7 +1646,7 @@ foreach ($wimFile in $wimFiles) {
     try {
         # installation mode
         switch ($Mode) {
-            "Install" {
+            'Install' {
 
                 # Download WIM file to local path
                 $localwimFile = Get-WIM
@@ -1551,11 +1656,13 @@ foreach ($wimFile in $wimFiles) {
 
 
 
-                Write-InstallLog -text "Get Installed Products" -Info
-                $installedApps = (Get-InstalledProgram -Publisher "Autodesk|CIDEON")
-                foreach ($installedApp in $installedApps) {
-                    Write-InstallLog -text "Installed Product: $($installedApp.DisplayName)" -Info
-                }
+                # Write-InstallLog -text 'Get Installed Products' -Info
+                # $installedApps = (Get-InstalledProgram -Publisher 'Autodesk|CIDEON')
+                # foreach ($installedApp in $installedApps) {
+                #     Write-InstallLog -text "-- $($installedApp.DisplayName)" -Info
+                # }
+
+
                 # #Uninstall Desktop App, if is installed
                 # Uninstall-Program -DisplayName "Autodesk desktop-app"
 
@@ -1595,38 +1702,41 @@ foreach ($wimFile in $wimFiles) {
                 #Remove-UserSystemVariable -Name "CDN_LNG"
 
 
-                Get-AppLogError -Start $StartTime
+
+                # # log the installed software
+                # Write-InstallLog -text 'Get Installed Products' -Info
+                # $installedApps = (Get-InstalledProgram -Publisher 'Autodesk' -DisplayName "Inventor Professional $Version|AutoCAD $Version|AutoCAD Mechanical $Version|Vault $Version")
+                # $installedApps += (Get-InstalledProgram -Publisher 'CIDEON')
+                # foreach ($installedApp in $installedApps) {
+                #     Write-InstallLog -text "-- $($installedApp.DisplayName) |  $($installedApp.DisplayVersion)" -Info
+                # }
 
 
 
 
             }
-            "Update" {
+            'Update' {
 
                 # mount wim from network
                 Mount-WIM
 
                 Install-Update
                 Copy-Local
-
-                Get-AppLogError -Start $StartTime
             }
 
 
-            "Uninstall" {
+            'Uninstall' {
                 # mount wim from network
                 # Mount-WIM
 
                 # Uninstall-AutodeskDeployment
 
                 # Uninstall CIDEON Tools with windows Installer
-                Uninstall-Program -Publisher "CIDEON"
+                Uninstall-Program -Publisher 'CIDEON'
                 # Uninstall Autodesk Products with windows Installer
-                Uninstall-Program -DisplayName "Autodesk AutoCAD Mechanical 2022 - English" -Publisher "Autodesk" -FilterOperator "-eq"
-                Uninstall-Program -DisplayName "Autodesk Inventor Professional 2022" -Publisher "Autodesk" -FilterOperator "-eq"
-                Uninstall-Program -DisplayName "Autodesk Vault Professional 2022 (Client)" -Publisher "Autodesk" -FilterOperator "-eq"
-
-                Get-AppLogError -Start $StartTime
+                Uninstall-Program -DisplayName 'Autodesk AutoCAD Mechanical 2022 - English' -Publisher 'Autodesk' -FilterOperator '-eq'
+                Uninstall-Program -DisplayName 'Autodesk Inventor Professional 2022' -Publisher 'Autodesk' -FilterOperator '-eq'
+                Uninstall-Program -DisplayName 'Autodesk Vault Professional 2022 (Client)' -Publisher 'Autodesk' -FilterOperator '-eq'
             }
         }
 
@@ -1638,13 +1748,7 @@ foreach ($wimFile in $wimFiles) {
     }
     finally {
         try {
-            # log the installed software
-            Write-InstallLog -text "Get Installed Products" -Info
-            $installedApps = (Get-InstalledProgram -Publisher "Autodesk" -DisplayName "Inventor Professional $Version|AutoCAD $Version|AutoCAD Mechanical $Version|Vault $Version")
-            $installedApps += (Get-InstalledProgram -Publisher "CIDEON")
-            foreach ($installedApp in $installedApps) {
-                Write-InstallLog -text "Installed Product: $($installedApp.DisplayName) |  $($installedApp.DisplayVersion)" -Info
-            }
+            Get-AppLogError -Start $StartTime
 
             # dismount and delete local wim, if copied
             Write-InstallLog -text "Dismounting WIM $($wimFile.Name)" -Info
@@ -1668,7 +1772,7 @@ foreach ($wimFile in $wimFiles) {
             if ($Logging.IsPresent) {
                 try {
 
-                    $logFolder = [System.IO.Path]::Combine($Path, "_LOG")
+                    $logFolder = [System.IO.Path]::Combine($Path, '_LOG')
                     if (!(Test-Path $logFolder)) {
                         New-Item -Path $logFolder -ItemType Directory | Out-Null
                     }
