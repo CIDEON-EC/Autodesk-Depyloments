@@ -1,6 +1,6 @@
 {
-    // See https://go.microsoft.com/fwlink/?LinkId=733558
-    // for the documentation about the tasks.json format
+  // See https://go.microsoft.com/fwlink/?LinkId=733558
+  // for the documentation about the tasks.json format
   "version": "2.0.0",
   "tasks": [
     {
@@ -32,7 +32,7 @@
       "args": [
         "-NoProfile",
         "-Command",
-        "$current = (git describe --tags --abbrev=0 2>/dev/null).TrimStart('v'); if (-not $current) { $current = '0.0.0' }; $parts = $current -split '\\.'; $patch = [int]$parts[2] + 1; $newVersion = \"$($parts[0]).$($parts[1]).$patch\"; $tagName = \"v$newVersion\"; Write-Host \"Creating tag: $tagName\"; git tag -a \"$tagName\" -m \"Release version $newVersion\"; Write-Host \"Tag created successfully: $tagName\""
+        "$current = (git describe --tags --abbrev=0 2>$null).TrimStart(\"v\"); if (-not $current) { $current = \"0.0.0\" }; $parts = $current -split '\\.'; $patch = [int]$parts[2] + 1; $newVersion = \"$($parts[0]).$($parts[1]).$patch\"; $tagName = \"v$newVersion\"; Write-Host \"Creating tag: $tagName\"; git tag -a \"$tagName\" -m \"Release version $newVersion\"; Write-Host \"Tag created successfully: $tagName\""
       ],
       "group": {
         "kind": "build",
@@ -56,7 +56,7 @@
       "args": [
         "-NoProfile",
         "-Command",
-        "$current = (git describe --tags --abbrev=0 2>/dev/null).TrimStart('v'); if (-not $current) { $current = '0.0.0' }; $parts = $current -split '\\.'; $minor = [int]$parts[1] + 1; $newVersion = \"$($parts[0]).$minor.0\"; $tagName = \"v$newVersion\"; Write-Host \"Creating tag: $tagName\"; git tag -a \"$tagName\" -m \"Release version $newVersion\"; Write-Host \"Tag created successfully: $tagName\""
+        "$current = (git describe --tags --abbrev=0 2>$null).TrimStart(\"v\"); if (-not $current) { $current = \"0.0.0\" }; $parts = $current -split '\\.'; $minor = [int]$parts[1] + 1; $newVersion = \"$($parts[0]).$minor.0\"; $tagName = \"v$newVersion\"; Write-Host \"Creating tag: $tagName\"; git tag -a \"$tagName\" -m \"Release version $newVersion\"; Write-Host \"Tag created successfully: $tagName\""
       ],
       "group": {
         "kind": "build",
@@ -80,7 +80,7 @@
       "args": [
         "-NoProfile",
         "-Command",
-        "$current = (git describe --tags --abbrev=0 2>/dev/null).TrimStart('v'); if (-not $current) { $current = '0.0.0' }; $parts = $current -split '\\.'; $major = [int]$parts[0] + 1; $newVersion = \"$major.0.0\"; $tagName = \"v$newVersion\"; Write-Host \"Creating tag: $tagName\"; git tag -a \"$tagName\" -m \"Release version $newVersion\"; Write-Host \"Tag created successfully: $tagName\""
+        "$current = (git describe --tags --abbrev=0 2>$null).TrimStart(\"v\"); if (-not $current) { $current = \"0.0.0\" }; $parts = $current -split '\\.'; $major = [int]$parts[0] + 1; $newVersion = \"$major.0.0\"; $tagName = \"v$newVersion\"; Write-Host \"Creating tag: $tagName\"; git tag -a \"$tagName\" -m \"Release version $newVersion\"; Write-Host \"Tag created successfully: $tagName\""
       ],
       "group": {
         "kind": "build",
@@ -104,7 +104,7 @@
       "args": [
         "-NoProfile",
         "-Command",
-        "$tag = git describe --tags --abbrev=0 2>/dev/null; if ($tag) { Write-Host \"Latest tag: $tag\" } else { Write-Host \"No tags found\" }"
+        "$tag = git describe --tags --abbrev=0 2>$null; if ($tag) { Write-Host \"Latest tag: $tag\" } else { Write-Host \"No tags found\" }"
       ],
       "group": {
         "kind": "test",
@@ -128,7 +128,7 @@
       "args": [
         "-NoProfile",
         "-Command",
-        "Write-Host 'Pushing tags to remote...'; git push origin --tags; Write-Host 'Tags pushed successfully!'"
+        "Write-Host \"Pushing tags to remote...\"; git push origin --tags; Write-Host \"Tags pushed successfully!\""
       ],
       "group": {
         "kind": "build",
