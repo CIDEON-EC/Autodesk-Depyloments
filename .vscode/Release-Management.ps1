@@ -23,8 +23,10 @@ function Get-CurrentVersion {
     return '0.0.0'
 }
 
-[CmdletBinding(SupportsShouldProcess)]
 function New-PatchTag {
+    [CmdletBinding(SupportsShouldProcess)]
+    param()
+
     $current = Get-CurrentVersion
     $parts = $current -split '\.'
     $patch = [int]$parts[2] + 1
@@ -47,8 +49,10 @@ function New-PatchTag {
     }
 }
 
-[CmdletBinding(SupportsShouldProcess)]
 function New-MinorTag {
+    [CmdletBinding(SupportsShouldProcess)]
+    param()
+
     $current = Get-CurrentVersion
     $parts = $current -split '\.'
     $minor = [int]$parts[1] + 1
@@ -71,8 +75,10 @@ function New-MinorTag {
     }
 }
 
-[CmdletBinding(SupportsShouldProcess)]
 function New-MajorTag {
+    [CmdletBinding(SupportsShouldProcess)]
+    param()
+
     $current = Get-CurrentVersion
     $parts = $current -split '\.'
     $major = [int]$parts[0] + 1
@@ -105,8 +111,10 @@ function Show-LatestTag {
     }
 }
 
-[CmdletBinding(SupportsShouldProcess)]
 function Push-Tag {
+    [CmdletBinding(SupportsShouldProcess)]
+    param()
+
     if (-not $PSCmdlet.ShouldProcess('origin', 'Push git tags')) {
         return
     }
