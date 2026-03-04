@@ -4,7 +4,7 @@
 
 .NOTES
     Author: Timon Först
-    Version: 1.0.3
+    Version: 1.1.1
 
 .DESCRIPTION
     Automation of downloading a wim file to a temporary local folder. After
@@ -182,66 +182,21 @@ function Write-InstallLog {
     }
 
 }
-function Invoke-WithoutWhatIf {
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory)]
-        [scriptblock]$ScriptBlock
-    )
-
-    $previousWhatIfPreference = $WhatIfPreference
-    try {
-        $WhatIfPreference = $false
-        & $ScriptBlock
-    }
-    finally {
-        $WhatIfPreference = $previousWhatIfPreference
-    }
-}
-function Resolve-WhatIfSourceItem {
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory)]
-        [string]$Path,
-        [Parameter()]
-        [object[]]$CachedItems,
-        [Parameter()]
-        [object[]]$Exclude,
-        [Parameter(Mandatory)]
-        [string]$MissingPathLogText,
-        [Parameter(Mandatory)]
-        [string]$CachedPathLogText
-    )
-
-    if (Test-Path -Path $Path) {
-        if ($Exclude) {
-            return @(Get-ChildItem -Path $Path -Exclude $Exclude)
-        }
-        return @(Get-ChildItem -Path $Path)
-    }
-
-    if (-not $WhatIfPreference) {
-        if ($Exclude) {
-            return @(Get-ChildItem -Path $Path -Exclude $Exclude)
-        }
-        return @(Get-ChildItem -Path $Path)
-    }
-
-    if ($CachedItems -and $CachedItems.Count -gt 0) {
-        Write-InstallLog -text $CachedPathLogText -Info
-        return @($CachedItems | ForEach-Object {
-                [pscustomobject]@{
-                    Name      = $_.Name
-                    FullName  = [System.IO.Path]::Combine($Path, $_.Name)
-                    FromCache = $true
-                }
-            })
-    }
-
-    Write-InstallLog -text $MissingPathLogText -Info
-    return @()
-}
 function Update-WIMInspectionCache {
+    <#
+    .SYNOPSIS
+        Updates cached file and folder information from a mounted WIM path.
+
+    .DESCRIPTION
+        Reads available content from the folders "Updates", "Cideon" and "Local" in a mounted image
+        and stores the results in script-level cache variables for later WhatIf simulation.
+
+    .PARAMETER MountedPath
+        The mounted root path of the deployment image.
+
+    .NOTES
+        Autor: Timon Först
+    #>
     [CmdletBinding()]
     param (
         [Parameter(Mandatory)]
@@ -280,37 +235,58 @@ function Update-WIMInspectionCache {
         Write-InstallLog -text "Local folder not found at: $localPath" -Info
     }
 }
-function Get-UpdateInstallSpec {
+function Get-CachedFiles {
+    <#
+    .SYNOPSIS
+        Returns file-like objects from cached inspection data for WhatIf mode.
+
+    .DESCRIPTION
+        Converts cached entries into objects with Name and FullName and logs the simulated operation.
+        If no cache is available, an empty collection is returned.
+
+    .PARAMETER Path
+        The target path used to build FullName values.
+    .PARAMETER OperationText
+        The text used for logging the simulated operation.
+    .PARAMETER CachedFiles
+        Optional cached entries to convert and return.
+
+    .NOTES
+        Autor: Timon Först
+    #>
     [CmdletBinding()]
     param (
         [Parameter(Mandatory)]
-        [string]$FileName,
+        [string]$Path,
         [Parameter(Mandatory)]
-        [string]$FilePath
+        [string]$OperationText,
+        [Parameter()]
+        [object[]]$CachedFiles
     )
 
-    $Executable = $FilePath
-    if ($FileName -like '*msi') {
-        $Executable = 'msiexec.exe'
-        $Arguments = "/i `"$FilePath`" /qn /norestart /l*v `"$script:LogFile`""
-    }
-    elseif ($FileName -like '*Licensing*exe') {
-        $Arguments = '--unattendedmodeui none --mode unattended'
-    }
-    elseif ($FileName -like '*AdODIS*exe') {
-        $Arguments = '--mode unattended'
-    }
-    elseif ($FileName -like '*vba*') {
-        $Arguments = '/quiet /norestart'
-    }
-    else {
-        $Arguments = '-q /quiet'
+    if ($CachedFiles -and $CachedFiles.Count -gt 0) {
+        Write-InstallLog -text "$OperationText $Path (WhatIf mode, using inspected WIM cache)" -Info
+        return @($CachedFiles | ForEach-Object {
+                $itemName = if ($_ -is [string]) {
+                    $_
+                }
+                elseif ($_.PSObject.Properties['Name']) {
+                    $_.Name
+                }
+                else {
+                    [string]$_
+                }
+
+                [pscustomobject]@{
+                    Name      = $itemName
+                    FullName  = [System.IO.Path]::Combine($Path, $itemName)
+                    FromCache = $true
+                }
+            })
     }
 
-    return [pscustomobject]@{
-        Executable = $Executable
-        Arguments  = $Arguments
-    }
+    Write-InstallLog -text "$OperationText $Path (WhatIf mode)" -Info
+    return @()
 }
 function Install-Update {
     <#
@@ -339,18 +315,41 @@ function Install-Update {
     # get all updates in folder
     Write-InstallLog -text 'Updates will be installed' -Info
     $filepath = [System.IO.Path]::Combine($Path, 'Updates')
+    $excludePatterns = @('*.txt', '*.xml', 'VBA')
 
-    $files = Resolve-WhatIfSourceItem -Path $filepath -CachedItems $Script:CachedUpdateFiles -Exclude @('*.txt', '*.xml', 'VBA') -MissingPathLogText "Would install updates from $filepath (WhatIf mode)" -CachedPathLogText "Would install updates from $filepath (WhatIf mode, using inspected WIM cache)"
+    if (-not $WhatIfPreference -or (Test-Path -Path $filepath)) {
+        $files = @(Get-ChildItem -Path $filepath -Exclude $excludePatterns)
+    }
+    else {
+        $files = Get-CachedFiles -Path $filepath -OperationText 'Would install updates from' -CachedFiles $Script:CachedUpdateFiles
+    }
+
     if ($files.Count -eq 0) {
         return
     }
 
     foreach ($file in $files) {
-        $installSpec = Get-UpdateInstallSpec -FileName $file.Name -FilePath $file.FullName
+        $executable = $file.FullName
+        if ($file.Name -like '*msi') {
+            $arguments = "/i ""$($file.FullName)"" /qn /norestart /l*v ""$script:LogFile"""
+            $executable = 'msiexec.exe'
+        }
+        elseif ($file.Name -like '*Licensing*exe') {
+            $arguments = '--unattendedmodeui none --mode unattended'
+        }
+        elseif ($file.Name -like '*AdODIS*exe') {
+            $arguments = '--mode unattended'
+        }
+        elseif ($file.Name -like '*vba*') {
+            $arguments = '/quiet /norestart'
+        }
+        else {
+            $arguments = '-q /quiet'
+        }
         try {
-            Write-InstallLog -text "Start update installation: $($file.Name) with arguments: $($installSpec.Arguments)" -Info
-            if ($PSCmdlet.ShouldProcess($file.Name, "Install Update with arguments: $($installSpec.Arguments)")) {
-                $process = Start-Process -NoNewWindow -FilePath $installSpec.Executable -ArgumentList $installSpec.Arguments -PassThru -Wait -ErrorAction Stop
+            Write-InstallLog -text "Start update installation: $($file.Name) with arguments: $arguments" -Info
+            if ($PSCmdlet.ShouldProcess($file.Name, "Install Update with arguments: $arguments")) {
+                $process = Start-Process -NoNewWindow -FilePath $executable -ArgumentList $arguments -PassThru -Wait -ErrorAction Stop
 
                 # Check exit code
                 if ($process.ExitCode -eq 0) {
@@ -491,6 +490,25 @@ function Uninstall-AutodeskDeployment {
 }
 
 function Set-AutodeskDeployment {
+    <#
+    .SYNOPSIS
+        Modifies Autodesk deployment XML files before installation.
+
+    .DESCRIPTION
+        Processes deployment product XML files and optionally removes language packs or specific packages.
+
+    .PARAMETER Path
+        Path to the Autodesk deployment image folder.
+    .PARAMETER xmlFileName
+        XML file name to modify, default is "setup_ext.xml".
+    .PARAMETER Language
+        One or more language pack names to keep.
+    .PARAMETER Remove
+        One or more package name patterns to remove.
+
+    .NOTES
+        Autor: Timon Först
+    #>
     [CmdletBinding(SupportsShouldProcess = $true)]
     param (
         [Parameter(Mandatory = $false, HelpMessage = 'Path to the Autodesk Deployment')]
@@ -606,45 +624,6 @@ function Set-AutodeskDeployment {
 
     end {}
 }
-function Get-CideonInstallArgumentString {
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory)]
-        [string]$FileName,
-        [Parameter()]
-        [switch]$VaultToolboxStandard,
-        [Parameter()]
-        [switch]$VaultToolboxPro,
-        [Parameter()]
-        [switch]$VaultToolboxObserver,
-        [Parameter()]
-        [switch]$VaultToolboxClassification,
-        [Parameter()]
-        [switch]$VaultToolboxUpdate
-    )
-
-    if ($FileName -like 'CIDEON.VAULT.TOOLBOX*' -and $FileName -notlike '*SERVICEPACK*') {
-        $features = @()
-        if ($VaultToolboxStandard.IsPresent) {
-            $features += 'STANDARD'
-        }
-        if ($VaultToolboxPro.IsPresent) {
-            $features += 'CIDEON_VAULT_TOOLBOX'
-        }
-        if ($VaultToolboxObserver.IsPresent) {
-            $features += 'CIDEON_VAULT_AddOns'
-        }
-        if ($VaultToolboxClassification.IsPresent) {
-            $features += 'CIDEON_INVENTOR_CLASSIFICATION_Addin'
-        }
-        if ($VaultToolboxUpdate.IsPresent) {
-            $features += 'CIDEON_UPDATE_EXTENSION'
-        }
-        return "ADDLOCAL=$($features -join ',') /qn"
-    }
-
-    return '/qn'
-}
 function Install-CideonTool {
 
     <#
@@ -697,24 +676,72 @@ function Install-CideonTool {
     # get all updates in folder
 
     Write-InstallLog -text 'Cideon Tools will be installed' -Info
-    $filepath = [System.IO.Path]::Combine($Path, 'Cideon')
 
-    $files = Resolve-WhatIfSourceItem -Path $filepath -CachedItems $Script:CachedCideonFiles -Exclude @('*.txt') -MissingPathLogText "Would install CIDEON tools from $filepath (WhatIf mode)" -CachedPathLogText "Would install CIDEON tools from $filepath (WhatIf mode, using inspected WIM cache)"
+    $filePath = [System.IO.Path]::Combine($Path, 'Cideon')
+    if (-not $WhatIfPreference -or (Test-Path -Path $filePath)) {
+        $files = @(Get-ChildItem -Path $filePath -Exclude @('*.txt'))
+    }
+    else {
+        $files = Get-CachedFiles -Path $filePath -OperationText 'Would install CIDEON tools from' -CachedFiles $Script:CachedCideonFiles
+    }
+
+    # reorder files so that service packs will be installed at the end, otherwise there could be problems with prerequisites of the service pack installations
+    $nonServicePackFiles = @($files | Where-Object { $_.Name -notlike '*servicepack*' })
+    $servicePackFiles = @($files | Where-Object { $_.Name -like '*servicepack*' })
+    $files = @($nonServicePackFiles + $servicePackFiles)
+
     if ($files.Count -eq 0) {
         return
     }
 
     foreach ($file in $files) {
-        $Arguments = Get-CideonInstallArgumentString -FileName $file.Name -VaultToolboxStandard:$VaultToolboxStandard.IsPresent -VaultToolboxPro:$VaultToolboxPro.IsPresent -VaultToolboxObserver:$VaultToolboxObserver.IsPresent -VaultToolboxClassification:$VaultToolboxClassification.IsPresent -VaultToolboxUpdate:$VaultToolboxUpdate.IsPresent
+        $arguments = '/qn'
+        $featureInfo = $null
+        if ($file.Name -like 'CIDEON.VAULT.TOOLBOX*') {
+            $features = @()
+            if ($VaultToolboxStandard) {
+                $features += 'STANDARD'
+            }
+            if ($VaultToolboxPro) {
+                $features += 'CIDEON_VAULT_TOOLBOX'
+            }
+            if ($VaultToolboxObserver) {
+                $features += 'CIDEON_VAULT_AddOns'
+            }
+            if ($VaultToolboxClassification) {
+                $features += 'CIDEON_INVENTOR_CLASSIFICATION_Addin'
+            }
+            if ($VaultToolboxUpdate) {
+                $features += 'CIDEON_UPDATE_EXTENSION'
+            }
+            $arguments = "ADDLOCAL=$($features -join ',') /qn"
+
+            $selectedFeatures = if ($features.Count -gt 0) {
+                $features -join ','
+            }
+            else {
+                '<none>'
+            }
+
+            $featureInfo = "Features (ADDLOCAL): $selectedFeatures"
+            if ($file.Name -like '*servicepack*') {
+                $featureInfo = "$featureInfo | Pakettyp: Servicepack"
+            }
+        }
         try {
-            Write-InstallLog -text "Start Installation: $($file.Name) $Arguments" -Info
-            if ($PSCmdlet.ShouldProcess($file.Name, "Install CIDEON Tool with arguments: $Arguments")) {
-                Start-Process -FilePath $file.FullName -ArgumentList $Arguments -Wait
+            $actionText = "Install CIDEON Tool with arguments: $arguments"
+            if ($featureInfo) {
+                $actionText = "$actionText | $featureInfo"
+            }
+
+            Write-InstallLog -text "Start Installation: $($file.Name) with action: $actionText" -Info
+            if ($PSCmdlet.ShouldProcess($file.Name, $actionText)) {
+                Start-Process -FilePath $file.FullName -ArgumentList $arguments -Wait -ErrorAction Stop
                 Write-InstallLog -text "Installed: $($file.Name)" -Info
             }
         }
         catch {
-            Write-InstallLog -text "CIDEON Install Error for: $($file.Name)" -Fail
+            Write-InstallLog -text "CIDEON Install Error for: $($file.Name): $($_.Exception.Message)" -Fail
         }
 
 
@@ -968,6 +995,20 @@ function Set-InventorProjectFile {
     }
 }
 function Remove-UserSystemVariable {
+    <#
+    .SYNOPSIS
+        Removes user environment variables from the current user's registry hive.
+
+    .DESCRIPTION
+        Resolves the current user SID and removes the specified variables from
+        `HKEY_USERS\<SID>\Environment` when they exist.
+
+    .PARAMETER Name
+        One or more user environment variable names to remove.
+
+    .NOTES
+        Autor: Timon Först
+    #>
     [CmdletBinding(SupportsShouldProcess = $true)]
     param (
         [string[]]$Name
@@ -1043,20 +1084,16 @@ function Copy-Local {
         # if sourcefolder is empty, use all folders in the Local folder
         if (-not $SourceFolder) {
             $localPath = [System.IO.Path]::Combine($Path, 'Local')
-            if (Test-Path -Path $localPath) {
+            if (-not $WhatIfPreference -or (Test-Path -Path $localPath)) {
                 $SourceFolder = Get-ChildItem -Path $localPath -Directory | Select-Object -ExpandProperty Name
-            }
-            elseif ($WhatIfPreference -and $Script:CachedLocalFolders -and $Script:CachedLocalFolders.Count -gt 0) {
-                Write-InstallLog -text "Would copy local files from $localPath (WhatIf mode, using inspected WIM cache)" -Info
-                $SourceFolder = @($Script:CachedLocalFolders)
-                $usingCachedSource = $true
-            }
-            elseif ($WhatIfPreference) {
-                Write-InstallLog -text "Would copy local files from $localPath (WhatIf mode)" -Info
-                return
             }
             else {
-                $SourceFolder = Get-ChildItem -Path $localPath -Directory | Select-Object -ExpandProperty Name
+                $cachedSource = Get-CachedFiles -Path $localPath -OperationText 'Would copy local files from' -CachedFiles $Script:CachedLocalFolders
+                $SourceFolder = @($cachedSource | Select-Object -ExpandProperty Name)
+                $usingCachedSource = $SourceFolder.Count -gt 0
+                if ($SourceFolder.Count -eq 0) {
+                    return
+                }
             }
         }
         # if targetfolder is empty, use for each sourcefolder C:\ as target
@@ -1259,6 +1296,17 @@ function Get-InstalledProgram {
     return $installedPrograms
 }
 function Set-CIDEONLanguageVariable {
+    <#
+    .SYNOPSIS
+        Sets CIDEON language-related machine environment variables based on system locale.
+
+    .DESCRIPTION
+        Detects the Windows system locale and sets `CDN_LNG` and `CDN_ITEM_LNG`
+        to predefined values.
+
+    .NOTES
+        Autor: Timon Först
+    #>
     [CmdletBinding(SupportsShouldProcess = $true)]
     param ()
     #TODO: This is not properly working, because the basic language of windows is always en-US, but the user language is different.
@@ -1511,13 +1559,8 @@ function Mount-WIM {
             $tempMount = [System.IO.Path]::Combine($env:TEMP, "WIM_Inspect_$(Get-Random)")
             $mounted = $false
             try {
-                Invoke-WithoutWhatIf -ScriptBlock {
-                    New-Item -Path $tempMount -ItemType Directory -Force | Out-Null
-                }
-
-                Invoke-WithoutWhatIf -ScriptBlock {
-                    Mount-WindowsImage -ImagePath $File.FullName -Index 1 -Path $tempMount -ReadOnly -ErrorAction Stop | Out-Null
-                }
+                New-Item -Path $tempMount -ItemType Directory -Force -WhatIf:$false | Out-Null
+                Mount-WindowsImage -ImagePath $File.FullName -Index 1 -Path $tempMount -ReadOnly -ErrorAction Stop | Out-Null
                 $mounted = $true
                 Write-InstallLog -text 'WIM mounted read-only for inspection' -Info
                 Update-WIMInspectionCache -MountedPath $tempMount
@@ -1530,9 +1573,7 @@ function Mount-WIM {
             catch {
                 Write-InstallLog -text "WhatIf mode: WIM inspection skipped - $($_.Exception.Message)" -Info
                 if (-not $mounted -and (Test-Path -Path $tempMount)) {
-                    Invoke-WithoutWhatIf -ScriptBlock {
-                        Remove-Item -Path $tempMount -Force -Recurse -ErrorAction SilentlyContinue
-                    }
+                    Remove-Item -Path $tempMount -Force -Recurse -ErrorAction SilentlyContinue -WhatIf:$false
                 }
                 return
             }
@@ -1802,6 +1843,20 @@ function Set-AutodeskUpdate {
 
 
 function Get-AppLogError {
+    <#
+    .SYNOPSIS
+        Retrieves recent MSI-related errors from the Windows Application event log.
+
+    .DESCRIPTION
+        Filters Application log entries since the given start time for provider `MsiInstaller`
+        and writes matching errors into the installation log.
+
+    .PARAMETER Start
+        Start time used to search for recent errors.
+
+    .NOTES
+        Autor: Timon Först
+    #>
     [CmdletBinding()]
     param (
         [Parameter(Mandatory = $false, HelpMessage = 'Starttime where to search for errors')]
@@ -2013,9 +2068,7 @@ foreach ($wimFile in $wimFiles) {
             # dismount and delete local wim, if copied
             Write-InstallLog -text "Dismounting WIM $($wimFile.Name)" -Info
             if ($WhatIfPreference -and $inspectMount) {
-                Invoke-WithoutWhatIf -ScriptBlock {
-                    Dismount-WIM -File $inspectMount
-                }
+                Dismount-WIM -File $inspectMount -WhatIf:$false
                 Write-InstallLog -text 'WIM inspection complete and dismounted' -Info
             }
             elseif ($NoDownload.IsPresent) {

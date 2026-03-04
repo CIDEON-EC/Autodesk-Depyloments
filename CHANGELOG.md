@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-03-04
+### Changed
+- Refactored `Install-CideonTool` for a simpler, direct execution flow with inline argument construction and direct `ShouldProcess`-guarded install calls
+- Updated `Install-CideonTool` file processing order so installers with `servicepack` in the file name are executed last
+- Refactored `Install-Update` to inline installer command resolution and remove unnecessary indirection
+- Replaced duplicated WhatIf cache fallback branches with shared `Get-CachedFiles` helper usage in `Install-Update`, `Install-CideonTool`, and `Copy-Local`
+- Simplified source resolution logic by removing redundant duplicated path-access branches in update/tool/local copy flows
+- Removed temporary WhatIf override helper and switched inspection-only operations to explicit `-WhatIf:$false` where needed
+
+### Fixed
+- Improved `WhatIf` output in `Install-CideonTool` for `CIDEON.VAULT.TOOLBOX*.msi` by adding explicit `ADDLOCAL` feature context in the `ShouldProcess` action text (also for service packs)
+
+### Removed
+- Removed `Resolve-WhatIfSourceItem`
+- Removed `Invoke-WithoutWhatIf`
+- Removed `Get-CideonInstallArgumentString`
+- Removed `Get-UpdateInstallSpec`
+
 ## [1.1.0] - 2026-03-03
 ### Added
 - Full WhatIf/Dry-Run mode support for all functions
