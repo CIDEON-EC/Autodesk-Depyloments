@@ -10,10 +10,13 @@ env:
 
 jobs:
   create-release:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     permissions:
       contents: write
       packages: write
+    defaults:
+      run:
+        shell: pwsh
 
     steps:
     - name: Checkout code
@@ -24,74 +27,212 @@ jobs:
     - name: Extract version from tag
       id: version
       run: |
-        TAG_NAME="${{ github.ref_name }}"
-        # Remove 'v' prefix to get clean version (e.g., v1.2.3 -> 1.2.3)
-        VERSION="${TAG_NAME#v}"
-        echo "version=$VERSION" >> $GITHUB_OUTPUT
-        echo "tag=$TAG_NAME" >> $GITHUB_OUTPUT
+        $tagName = '${{ github.ref_name }}'
+        if (-not $tagName.StartsWith('v')) {
+          throw "Tag '$tagName' must start with 'v'."
+        }
 
-        # Check if this is a prerelease (contains alpha, beta, rc, etc.)
-        if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-          echo "prerelease=false" >> $GITHUB_OUTPUT
-        else
-          echo "prerelease=true" >> $GITHUB_OUTPUT
-        fi
+        $version = $tagName.Substring(1)
+        $isPreRelease = if ($version -match '^[0-9]+\.[0-9]+\.[0-9]+$') { 'false' } else { 'true' }
 
-        echo "Extracted version: $VERSION"
-        echo "Is prerelease: $(grep prerelease $GITHUB_OUTPUT | cut -d= -f2)"
+        "version=$version" | Add-Content -Path $env:GITHUB_OUTPUT
+        "tag=$tagName" | Add-Content -Path $env:GITHUB_OUTPUT
+        "prerelease=$isPreRelease" | Add-Content -Path $env:GITHUB_OUTPUT
 
-    - name: Update version in Install-ADSK.ps1
+        Write-Host "Extracted version: $version"
+        Write-Host "Is prerelease: $isPreRelease"
+
+    - name: Update script and module versions
       run: |
-        VERSION="${{ steps.version.outputs.version }}"
-        # Update the Version line in the .NOTES section
-        sed -i "s/Version: [0-9.]*$/Version: $VERSION/" Install-ADSK.ps1
-        echo "Updated Install-ADSK.ps1 version to $VERSION"
-        # Verify the update
-        grep "Version:" Install-ADSK.ps1 | head -1
+        $version = '${{ steps.version.outputs.version }}'
+
+        $installScriptPath = 'Install-ADSK.ps1'
+        $installScriptContent = Get-Content -Path $installScriptPath -Raw
+        $updatedInstallScript = [regex]::Replace(
+          $installScriptContent,
+          '(?m)^\s*Version:\s*[0-9A-Za-z\.-]+\s*$',
+          "    Version: $version",
+          1
+        )
+
+        if ($installScriptContent -eq $updatedInstallScript) {
+          throw 'Failed to update Version in Install-ADSK.ps1.'
+        }
+
+        Set-Content -Path $installScriptPath -Value $updatedInstallScript -Encoding UTF8
+
+        $modulePath = 'CIDEON.AutodeskDeployment.psm1'
+        $moduleContent = Get-Content -Path $modulePath -Raw
+        $updatedModule = [regex]::Replace(
+          $moduleContent,
+          '(?m)^\s*ModuleVersion:\s*[0-9A-Za-z\.-]+\s*$',
+          "    ModuleVersion: $version",
+          1
+        )
+
+        if ($moduleContent -eq $updatedModule) {
+          throw 'Failed to update ModuleVersion in CIDEON.AutodeskDeployment.psm1.'
+        }
+
+        Set-Content -Path $modulePath -Value $updatedModule -Encoding UTF8
+
+        Write-Host "Updated Install-ADSK.ps1 and module version to $version"
+
+    - name: Sign deployment module
+      env:
+        CODE_SIGNING_PFX_BASE64: ${{ secrets['CODE_SIGNING_PFX_BASE64'] }}
+        CODE_SIGNING_PFX_PASSWORD: ${{ secrets['CODE_SIGNING_PFX_PASSWORD'] }}
+        CODE_SIGNING_TIMESTAMP_URL: ${{ secrets['CODE_SIGNING_TIMESTAMP_URL'] }}
+      run: |
+        if ([string]::IsNullOrWhiteSpace($env:CODE_SIGNING_PFX_BASE64)) {
+          throw 'Missing required secret: CODE_SIGNING_PFX_BASE64'
+        }
+
+        if ([string]::IsNullOrWhiteSpace($env:CODE_SIGNING_PFX_PASSWORD)) {
+          throw 'Missing required secret: CODE_SIGNING_PFX_PASSWORD'
+        }
+
+        $timestampServer = if ([string]::IsNullOrWhiteSpace($env:CODE_SIGNING_TIMESTAMP_URL)) {
+          'http://timestamp.digicert.com'
+        }
+        else {
+          $env:CODE_SIGNING_TIMESTAMP_URL
+        }
+
+        $pfxPath = Join-Path -Path $env:RUNNER_TEMP -ChildPath 'codesign.pfx'
+        [System.IO.File]::WriteAllBytes($pfxPath, [System.Convert]::FromBase64String($env:CODE_SIGNING_PFX_BASE64))
+
+        $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
+          $pfxPath,
+          $env:CODE_SIGNING_PFX_PASSWORD,
+          [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable -bor
+          [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet
+        )
+
+        if (-not $cert.HasPrivateKey) {
+          throw 'Loaded code-signing certificate does not contain a private key.'
+        }
+
+        Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password (ConvertTo-SecureString -String $env:CODE_SIGNING_PFX_PASSWORD -AsPlainText -Force) | Out-Null
+
+        $modulePath = 'CIDEON.AutodeskDeployment.psm1'
+        $signatureResult = Set-AuthenticodeSignature -FilePath $modulePath -Certificate $cert -TimestampServer $timestampServer -HashAlgorithm SHA256
+
+        if ($signatureResult.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+          throw "Module signing failed. Signature status: $($signatureResult.Status)"
+        }
+
+        $verification = Get-AuthenticodeSignature -FilePath $modulePath
+        if ($verification.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+          throw "Signed module verification failed. Signature status: $($verification.Status)"
+        }
+
+        Write-Host 'Module signing and signature verification completed successfully.'
 
     - name: Create deployment package
       run: |
-        VERSION="${{ steps.version.outputs.version }}"
-        PACKAGE_NAME="Autodesk-Deployment-$VERSION"
+        $version = '${{ steps.version.outputs.version }}'
+        $packageName = "Autodesk-Deployment-$version"
 
-        # Create directory for deployment package
-        mkdir -p "$PACKAGE_NAME"
+        New-Item -Path $packageName -ItemType Directory -Force | Out-Null
 
-        # Copy deployment files
-        cp Install-ADSK.ps1 "$PACKAGE_NAME/"
-        cp Copy-Local.ps1 "$PACKAGE_NAME/"
-        cp readme.md "$PACKAGE_NAME/"
-        cp CHANGELOG.md "$PACKAGE_NAME/" 2>/dev/null || true
-        cp -r samples "$PACKAGE_NAME/"
+        Copy-Item -Path 'Install-ADSK.ps1' -Destination $packageName -Force
+        Copy-Item -Path 'Copy-Local.ps1' -Destination $packageName -Force
+        Copy-Item -Path 'CIDEON.AutodeskDeployment.psm1' -Destination $packageName -Force
+        Copy-Item -Path 'CIDEON-CodeSigning.cer' -Destination $packageName -Force
+        Copy-Item -Path 'readme.md' -Destination $packageName -Force
 
-        # Create ZIP archive
-        zip -r "${PACKAGE_NAME}.zip" "$PACKAGE_NAME"
-        echo "Created deployment package: ${PACKAGE_NAME}.zip"
-        ls -lh "${PACKAGE_NAME}.zip"
+        if (Test-Path -Path 'CHANGELOG.md') {
+          Copy-Item -Path 'CHANGELOG.md' -Destination $packageName -Force
+        }
+
+        if (Test-Path -Path 'samples') {
+          Copy-Item -Path 'samples' -Destination $packageName -Recurse -Force
+        }
+
+        $zipFile = "$packageName.zip"
+        if (Test-Path -Path $zipFile) {
+          Remove-Item -Path $zipFile -Force
+        }
+
+        Compress-Archive -Path $packageName -DestinationPath $zipFile -Force
+        Write-Host "Created deployment package: $zipFile"
 
     - name: Generate release notes
       id: release_notes
       run: |
-        VERSION="${{ steps.version.outputs.version }}"
-        {
-          echo "## Autodesk Deployment Tools $VERSION"
-          echo ""
-          echo "### 📦 Package Contents"
-          echo "- **Install-ADSK.ps1** - Main installation script for Autodesk products"
-          echo "- **Copy-Local.ps1** - Local file copy script for configuration"
-          echo "- **readme.md** - Detailed documentation and workflow guide"
-          echo "- **samples/** - Sample batch files for automated deployment"
-          echo "- **CHANGELOG.md** - Version history and changes"
-          echo ""
-          echo "### 🔄 Release Information"
-          echo "**Tag:** \`${{ steps.version.outputs.tag }}\`"
-          echo "**Version:** \`$VERSION\`"
-          echo ""
-          echo "For detailed information and instructions, see the included readme.md"
-        } > release_notes.md
+        $version = '${{ steps.version.outputs.version }}'
+        $tag = '${{ steps.version.outputs.tag }}'
+        $changelogPath = Join-Path -Path $env:GITHUB_WORKSPACE -ChildPath 'CHANGELOG.md'
 
-        echo "Generated release notes:"
-        cat release_notes.md
+        $candidateTitles = [System.Collections.Generic.List[string]]::new()
+        foreach ($candidate in @($tag, $version)) {
+          if (-not [string]::IsNullOrWhiteSpace($candidate) -and -not $candidateTitles.Contains($candidate)) {
+            $candidateTitles.Add($candidate)
+          }
+        }
+
+        if ($version -match '^(\d+\.\d+\.\d+)') {
+          $baseVersion = $matches[1]
+          foreach ($candidate in @("v$baseVersion", $baseVersion)) {
+            if (-not $candidateTitles.Contains($candidate)) {
+              $candidateTitles.Add($candidate)
+            }
+          }
+        }
+
+        if (-not $candidateTitles.Contains('Unreleased')) {
+          $candidateTitles.Add('Unreleased')
+        }
+
+        $changelogContent = ''
+        $selectedHeading = ''
+        if (Test-Path -Path $changelogPath) {
+          $rawChangelog = Get-Content -Path $changelogPath -Raw
+          foreach ($candidate in $candidateTitles) {
+            $pattern = '(?ms)^## \[' + [regex]::Escape($candidate) + '\][^\r\n]*\r?\n(?<section>.*?)(?=^## \[|\z)'
+            $match = [regex]::Match($rawChangelog, $pattern)
+            if ($match.Success) {
+              $changelogContent = $match.Groups['section'].Value.Trim()
+              $selectedHeading = $candidate
+              break
+            }
+          }
+        }
+
+        if ([string]::IsNullOrWhiteSpace($changelogContent)) {
+          $changelogContent = 'Keine passende Versionssektion in CHANGELOG.md gefunden.'
+        }
+        elseif ($selectedHeading -eq 'Unreleased') {
+          Write-Host 'Using the [Unreleased] changelog section for the release notes.'
+        }
+        else {
+          Write-Host "Using the [$selectedHeading] changelog section for the release notes."
+        }
+
+        $releaseNotes = @(
+          "## Autodesk Deployment Tools $version"
+          ''
+          '## Changelog'
+          ''
+          $changelogContent
+          ''
+          '### Release Assets'
+          '- **CIDEON.AutodeskDeployment.psm1** - Signed module file (direct download)'
+          '- **CIDEON-CodeSigning.cer** - Public certificate'
+          "- **Autodesk-Deployment-$version.zip** - Full deployment package"
+          ''
+          '### Release Information'
+          "**Tag:** $tag"
+          "**Version:** $version"
+          ''
+          'Module version in CIDEON.AutodeskDeployment.psm1 is aligned with this release tag and signed in CI.'
+        )
+
+        Set-Content -Path 'release_notes.md' -Value $releaseNotes -Encoding UTF8
+
+        Write-Host 'Generated release notes:'
+        Get-Content -Path release_notes.md
 
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v1
@@ -101,6 +242,8 @@ jobs:
         body_path: release_notes.md
         files: |
           Autodesk-Deployment-${{ steps.version.outputs.version }}.zip
+          CIDEON.AutodeskDeployment.psm1
+          CIDEON-CodeSigning.cer
         draft: false
         prerelease: ${{ steps.version.outputs.prerelease }}
       env:
@@ -109,6 +252,22 @@ jobs:
     - name: Cleanup
       if: always()
       run: |
-        rm -rf "Autodesk-Deployment-${{ steps.version.outputs.version }}" 2>/dev/null || true
-        rm -f "Autodesk-Deployment-${{ steps.version.outputs.version }}.zip" 2>/dev/null || true
-        rm -f release_notes.md 2>/dev/null || true
+        $packageName = "Autodesk-Deployment-${{ steps.version.outputs.version }}"
+        $zipFile = "$packageName.zip"
+        $pfxPath = Join-Path -Path $env:RUNNER_TEMP -ChildPath 'codesign.pfx'
+
+        if (Test-Path -Path $packageName) {
+          Remove-Item -Path $packageName -Recurse -Force
+        }
+
+        if (Test-Path -Path $zipFile) {
+          Remove-Item -Path $zipFile -Force
+        }
+
+        if (Test-Path -Path 'release_notes.md') {
+          Remove-Item -Path 'release_notes.md' -Force
+        }
+
+        if (Test-Path -Path $pfxPath) {
+          Remove-Item -Path $pfxPath -Force
+        }
